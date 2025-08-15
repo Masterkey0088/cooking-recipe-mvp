@@ -1,0 +1,6 @@
+streamlit
+openai>=1.43,<2
+pydantic>=2,<3
+pillow
+requests
+pandas
