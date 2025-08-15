@@ -188,12 +188,96 @@ def make_step_image(step, w=900, h=600, bg=(248,248,248)):
     draw.rectangle([0,0,w-1,h-1], outline=(210,210,210), width=1)
     return img
 
+from math import sqrt
+
+# 料理アクションと道具の簡易マップ（必要に応じて増やせます）
+ACTION_MAP = {
+    "切る": "chopping", "ざく切り": "rough chop", "みじん": "minced",
+    "炒め": "stir fry", "焼く": "grilling", "茹で": "boiling",
+    "煮": "simmering", "蒸": "steaming", "和える": "mixing", "混ぜ": "mixing",
+    "レンジ": "microwave", "電子レンジ": "microwave"
+}
+TOOL_HINTS = {
+    "切る": "knife, cutting board", "みじん": "knife, cutting board",
+    "炒め": "frying pan, spatula", "焼く": "frying pan",
+    "茹で": "pot of boiling water", "煮": "saucepan",
+    "蒸": "steamer pot with lid", "和える": "mixing bowl", "混ぜ": "mixing bowl",
+    "レンジ": "microwave oven", "電子レンジ": "microwave oven"
+}
+# よく使う食材の簡易日英マップ（足りなければ随時足せます）
+ING_EN = {
+    "キャベツ":"cabbage","ねぎ":"green onion","長ねぎ":"leek","玉ねぎ":"onion",
+    "鶏むね肉":"chicken breast","鶏もも肉":"chicken thigh","豚肉":"pork","牛肉":"beef",
+    "なす":"eggplant","ピーマン":"bell pepper","もやし":"bean sprouts","きのこ":"mushroom",
+    "しめじ":"shimeji mushroom","えのき":"enoki mushroom","豆腐":"tofu","卵":"egg",
+    "ご飯":"rice","米":"rice","うどん":"udon noodles","そば":"soba noodles","パスタ":"pasta",
+    "にんじん":"carrot","じゃがいも":"potato","ブロッコリー":"broccoli","トマト":"tomato",
+    "鮭":"salmon","さば":"mackerel","ツナ":"tuna","ベーコン":"bacon","ハム":"ham","チーズ":"cheese"
+}
+
+def _jp_ing_to_en(word: str) -> str | None:
+    for jp, en in ING_EN.items():
+        if jp in word:
+            return en
+    return None
+
+def _build_step_keywords(step_text: str, ingredients_jp: list[str]) -> str:
+    # 料理アクション/道具ヒント
+    act = tool = None
+    for jp, en in ACTION_MAP.items():
+        if jp in step_text:
+            act, tool = en, TOOL_HINTS.get(jp)
+            break
+    # 食材（手順文 or 全体の材料から拾う）
+    ing_en = None
+    for jp, en in ING_EN.items():
+        if jp in step_text:
+            ing_en = en; break
+    if not ing_en:
+        for it in ingredients_jp:
+            ing_en = _jp_ing_to_en(it)
+            if ing_en: break
+
+    # 最終クエリ（顔NG・手元・キッチン等の意図も追加）
+    kws = [k for k in [act, ing_en, tool, "cooking", "kitchen", "hands", "close-up", "no face"] if k]
+    return " ".join(kws) if kws else f"{step_text} cooking kitchen hands"
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    na = sqrt(sum(x*x for x in a)); nb = sqrt(sum(y*y for y in b))
+    if na == 0 or nb == 0: return 0.0
+    return sum(x*y for x, y in zip(a, b)) / (na * nb)
+
+@st.cache_data(show_spinner=False)
+def _embed(text: str) -> list[float] | None:
+    try:
+        return client.embeddings.create(model="text-embedding-3-small", input=text).data[0].embedding
+    except Exception as e:
+        st.session_state.setdefault("img_errors", []).append(f"embed_err: {e}")
+        return None
+
+@st.cache_data(show_spinner=False)
+def _pexels_search_json(query: str, per_page: int = 18, orientation: str = "landscape") -> dict:
+    key = os.getenv("PEXELS_API_KEY") or st.secrets.get("PEXELS_API_KEY")
+    if not key:
+        st.session_state.setdefault("img_errors", []).append("PEXELS_API_KEY が未設定です（Secretsに追加）")
+        return {}
+    r = requests.get(
+        "https://api.pexels.com/v1/search",
+        headers={"Authorization": key},
+        params={"query": query, "per_page": per_page, "orientation": orientation}
+    )
+    try:
+        return r.json() if r.status_code == 200 else {}
+    except Exception:
+        return {}
+
+
 # 右カラム描画（画像まわりをまとめた関数）
 def render_right_column(rec,
                         image_mode="テキストのみ（現在のまま）",
                         max_ai_images=4,
                         image_size="1024x1024"):
-    """右側カラムの表示ロジックを関数化（インデント崩れ対策版）"""
+    """右側カラムの表示ロジック（Pexels精度アップ対応版）"""
 
     # --- AI画像（OpenAI: gpt-image-1） ---
     if image_mode.startswith("AI画像"):
@@ -211,32 +295,34 @@ def render_right_column(rec,
             step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
         if step_imgs:
             st.image(step_imgs, use_container_width=True)
-        return  # ← ここで終了
+        return  # ここで終了
 
-    # --- 素材写真（Pexels） ---
+    # --- 素材写真（Pexels：埋め込みで再ランク） ---
     if image_mode.startswith("素材写真"):
-        try:
-            hero_bytes = _stock_dish_image(rec.recipe_title, [i.name for i in rec.ingredients])
-            if hero_bytes:
-                st.image(Image.open(BytesIO(hero_bytes)),
-                         caption="完成イメージ（Photos: Pexels）", use_container_width=True)
+        # 完成皿
+        hero_bytes = _stock_dish_image(rec.recipe_title, [i.name for i in rec.ingredients])
+        if hero_bytes:
+            st.image(Image.open(BytesIO(hero_bytes)),
+                     caption="完成イメージ（Photos: Pexels）", use_container_width=True)
 
-            step_imgs = []
-            for s in rec.steps[:max_ai_images]:
-                b = _stock_step_image(s.text)
-                step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
-            if step_imgs:
-                st.image(step_imgs, use_container_width=True)
-            return
-        except NameError:
-            # Pexels用関数をまだ入れていない／APIキー未設定など
-            st.info("素材写真モードは未設定のため、テキスト画像で表示します。")
+        # ★ここがポイント：材料名リストを渡す
+        ing_names = [i.name for i in rec.ingredients]
+
+        step_imgs = []
+        for s in rec.steps[:max_ai_images]:
+            # 変更：_stock_step_image(step_text, ingredients_jp)
+            b = _stock_step_image(s.text, ing_names)
+            step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
+        if step_imgs:
+            st.image(step_imgs, use_container_width=True)
+        return
 
     # --- テキスト画像（従来） ---
     images = [make_step_image(s) for s in rec.steps[:6]]
     st.image(images,
              caption=[f"STEP {s.n}" for s in rec.steps[:6]],
              use_container_width=True)
+
 
 # --- Pexels 画像取得ユーティリティ ---
 def _pexels_search(query: str, per_page: int = 1, orientation: str = "landscape") -> list[str]:
@@ -272,10 +358,32 @@ def _stock_dish_image(recipe_title: str, ingredients: list[str]) -> bytes | None
     urls = _pexels_search(q, per_page=1)
     return _fetch_image_bytes(urls[0]) if urls else None
 
-def _stock_step_image(step_text: str) -> bytes | None:
-    q = f"{step_text} cooking kitchen"
-    urls = _pexels_search(q, per_page=1)
-    return _fetch_image_bytes(urls[0]) if urls else None
+def _stock_step_image(step_text: str, ingredients_jp: list[str]) -> bytes | None:
+    # 1) 日本語→英キーワード化
+    query = _build_step_keywords(step_text, ingredients_jp)
+
+    # 2) 候補を広めに取得
+    data = _pexels_search_json(query, per_page=18)
+    photos = data.get("photos", [])
+    if not photos:
+        return None
+
+    # 3) altテキストで再ランク（埋め込み類似度）
+    qv = _embed(query)
+    if not qv:
+        url = photos[0]["src"]["large"]  # 埋め込み失敗時は先頭を採用
+        return _fetch_image_bytes(url)
+
+    scored = []
+    for p in photos:
+        alt = p.get("alt") or ""
+        av = _embed(alt) or qv
+        scored.append(( _cosine(qv, av), p ))
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    top = scored[0][1]
+    return _fetch_image_bytes(top["src"]["large"])
+
 
 @st.cache_data(show_spinner=False)
 def _openai_image_bytes(prompt: str, size: str = "1024x1024", model: str = "gpt-image-1") -> bytes | None:
