@@ -228,6 +228,19 @@ def quality_check(rec) -> tuple[bool, list[str]]:
     ok = (len(warns) == 0)
     return ok, warns
 
+# === 品質フィルタ設定 ===
+MAX_QUALITY_RETRY = 3        # 品質OKが0件だったら、この回数だけ再生成
+KEEP_AT_LEAST_ONE = True     # 最後まで0件なら、保険で1件は出すか
+
+def _filter_passed_recipes(recommendations):
+    """quality_check を通過したレシピのみを返す"""
+    passed = []
+    for r in recommendations:
+        ok, _ = quality_check(r)
+        if ok:
+            passed.append(r)
+    return passed
+
 
 # ==============================================================
 # Utilities — tools inference
@@ -335,7 +348,7 @@ def generate_recipes(ingredients: List[str], servings: int, theme: str, genre: s
             prompt = PROMPT_TMPL  # 既存のスキーマ説明を再利用
             resp = _client.chat.completions.create(
                 model="gpt-4o-mini",
-                temperature=0.6,
+                temperature=0.4,
                 messages=[
                     {"role": "system", "content": prompt + "\n" + sys},
                     {"role": "user", "content": usr},
@@ -440,7 +453,30 @@ if not data.recommendations:
         ingredients_raw, servings, theme, genre, max_minutes,
         want_keyword=want_keyword, avoid_keywords=avoid_keywords
     )
+# 追加：品質フィルタ + 自動リトライ
+attempt = 0
+passed = _filter_passed_recipes(data.recommendations)
 
+while not passed and attempt < MAX_QUALITY_RETRY:
+    attempt += 1
+    with st.spinner(f"品質に合うレシピを再提案中…（{attempt}/{MAX_QUALITY_RETRY}）"):
+        data = generate_recipes(
+            ingredients_raw, servings, theme, genre, max_minutes,
+            want_keyword=want_keyword, avoid_keywords=avoid_keywords
+        )
+        passed = _filter_passed_recipes(data.recommendations)
+
+# 表示対象を差し替え
+if passed:
+    data.recommendations = passed
+else:
+    if KEEP_AT_LEAST_ONE and data.recommendations:
+        # 保険：最後に得られた候補から1件だけ表示（バッジは付かない）
+        data.recommendations = [data.recommendations[0]]
+        st.info("品質基準を満たす候補が見つからなかったため、参考として1件だけ表示します。")
+    else:
+        st.error("品質基準を満たすレシピを生成できませんでした。条件を少し緩めて再度お試しください。")
+        st.stop()
 
 for rec in data.recommendations:
     st.divider()
