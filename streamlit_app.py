@@ -188,6 +188,56 @@ def make_step_image(step, w=900, h=600, bg=(248,248,248)):
     draw.rectangle([0,0,w-1,h-1], outline=(210,210,210), width=1)
     return img
 
+# 右カラム描画（画像まわりをまとめた関数）
+def render_right_column(rec,
+                        image_mode="テキストのみ（現在のまま）",
+                        max_ai_images=4,
+                        image_size="1024x1024"):
+    """右側カラムの表示ロジックを関数化（インデント崩れ対策版）"""
+
+    # --- AI画像（OpenAI: gpt-image-1） ---
+    if image_mode.startswith("AI画像"):
+        hero_bytes = _openai_image_bytes(
+            _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
+            size=image_size
+        )
+        if hero_bytes:
+            st.image(Image.open(BytesIO(hero_bytes)),
+                     caption="完成イメージ", use_container_width=True)
+
+        step_imgs = []
+        for s in rec.steps[:max_ai_images]:
+            b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
+            step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
+        if step_imgs:
+            st.image(step_imgs, use_container_width=True)
+        return  # ← ここで終了
+
+    # --- 素材写真（Pexels） ---
+    if image_mode.startswith("素材写真"):
+        try:
+            hero_bytes = _stock_dish_image(rec.recipe_title, [i.name for i in rec.ingredients])
+            if hero_bytes:
+                st.image(Image.open(BytesIO(hero_bytes)),
+                         caption="完成イメージ（Photos: Pexels）", use_container_width=True)
+
+            step_imgs = []
+            for s in rec.steps[:max_ai_images]:
+                b = _stock_step_image(s.text)
+                step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
+            if step_imgs:
+                st.image(step_imgs, use_container_width=True)
+            return
+        except NameError:
+            # Pexels用関数をまだ入れていない／APIキー未設定など
+            st.info("素材写真モードは未設定のため、テキスト画像で表示します。")
+
+    # --- テキスト画像（従来） ---
+    images = [make_step_image(s) for s in rec.steps[:6]]
+    st.image(images,
+             caption=[f"STEP {s.n}" for s in rec.steps[:6]],
+             use_container_width=True)
+
 # --- Pexels 画像取得ユーティリティ ---
 def _pexels_search(query: str, per_page: int = 1, orientation: str = "landscape") -> list[str]:
     key = os.getenv("PEXELS_API_KEY") or st.secrets.get("PEXELS_API_KEY", None)
@@ -437,51 +487,8 @@ if submitted:
                 st.markdown(f"{s.n}. {s.text}")
 
         with colB:
-            # フォームの保険（未定義でも落ちないように）
-    try:
-        image_mode
-    except NameError:
-        image_mode = "テキストのみ（現在のまま）"
-        max_ai_images = 4
-        image_size = "1024x1024"
-
-    if image_mode.startswith("AI画像"):
-        # ---- OpenAI画像生成（組織Verifyが必要）----
-        hero_bytes = _openai_image_bytes(
-            _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
-            size=image_size
-        )
-        if hero_bytes:
-            st.image(Image.open(BytesIO(hero_bytes)),
-                     caption="完成イメージ", use_container_width=True)
-
-        step_imgs = []
-        for s in rec.steps[:max_ai_images]:
-            b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
-            step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
-        if step_imgs:
-            st.image(step_imgs, use_container_width=True)
-
-    elif image_mode.startswith("素材写真"):
-        # ---- Pexels 素材写真 ----
-        hero_bytes = _stock_dish_image(rec.recipe_title, [i.name for i in rec.ingredients])
-        if hero_bytes:
-            st.image(Image.open(BytesIO(hero_bytes)),
-                     caption="完成イメージ（Photos: Pexels）", use_container_width=True)
-
-        step_imgs = []
-        for s in rec.steps[:max_ai_images]:
-            b = _stock_step_image(s.text)
-            step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
-        if step_imgs:
-            st.image(step_imgs, use_container_width=True)
-
-    else:
-        # ---- テキスト画像（従来）----
-        images = [make_step_image(s) for s in rec.steps[:6]]
-        st.image(images,
-                 caption=[f"STEP {s.n}" for s in rec.steps[:6]],
-                 use_container_width=True)
+            # 右カラムは関数を1行で呼ぶだけ（インデント事故を根絶）
+            render_right_column(rec, image_mode, max_ai_images, image_size)
 
     # 画像失敗時の簡易ログ（任意）
     errs = st.session_state.get("img_errors", [])
