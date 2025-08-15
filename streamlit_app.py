@@ -11,7 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 from openai import OpenAI
 import pandas as pd
 
-import re  # ファイルの先頭付近にあるはずのimport文の近くに追加
+import re
+import math
 
 def strip_step_prefix(text: str) -> str:
     """先頭の数字やSTEP表記を除去して返す"""
@@ -90,6 +91,105 @@ class Recipe(BaseModel):
 
 class RecipeSet(BaseModel):
     recommendations: List[Recipe] = Field(..., min_items=1, max_items=3)
+
+# ---- 量の自動補完・正規化 ----
+# 1人あたりの目安（g）
+PROTEIN_G_PER_SERV = {
+    "鶏むね肉":100, "鶏もも肉":100, "豚肉":100, "牛肉":100, "ひき肉":100,
+    "鮭":90, "さば":90, "ツナ":70, "ベーコン":30, "ハム":30, "豆腐":150
+}
+VEG_G_PER_SERV = {
+    "玉ねぎ":50, "ねぎ":10, "長ねぎ":20, "キャベツ":80, "にんじん":40,
+    "じゃがいも":80, "なす":60, "ピーマン":40, "もやし":100, "ブロッコリー":70,
+    "きのこ":60, "しめじ":60, "えのき":60, "トマト":80, "青菜":70, "小松菜":70, "ほうれん草":70
+}
+# 1人あたりの目安（小さじ / 大さじ）
+COND_TSP_PER_SERV = {
+    "塩":0.125, "砂糖":0.5, "しょうゆ":1.0, "醤油":1.0, "みりん":1.0, "酒":1.0,
+    "酢":1.0, "コチュジャン":0.5, "味噌":1.5, "味の素":0.25, "顆粒だし":0.5
+}
+OIL_TSP_PER_SERV = {"サラダ油":1.0, "ごま油":0.5, "オリーブオイル":1.0}
+PIECE_PER_SERV = {"卵":"1個", "にんにく":"0.5片", "生姜":"0.5片"}
+
+TSP_IN_TBSP = 3.0
+
+_num_re = re.compile(r'([0-9]+(?:\.[0-9]+)?)')
+def _has_number(s: str) -> bool:
+    return bool(_num_re.search(s or ""))
+
+def _round_tsp_to_pretty(tsp: float) -> str:
+    # 大さじ/小さじ/少々に整形
+    if tsp <= 0.15:  # ごく少量
+        return "少々"
+    tbsp = tsp / TSP_IN_TBSP
+    if tbsp >= 1.0:
+        val = round(tbsp*2)/2  # 0.5刻み
+        return f"大さじ{val:g}"
+    else:
+        val = round(tsp*2)/2
+        return f"小さじ{val:g}"
+
+def _grams_to_pretty(g: int) -> str:
+    # 50g 単位で四捨五入（小量は10g単位）
+    if g < 60: step = 10
+    elif g < 150: step = 25
+    else: step = 50
+    pretty = int(round(g/step)*step)
+    return f"{pretty}g"
+
+def _guess_amount(name: str, servings: int) -> str:
+    # 卵・にんにく等の「個」系
+    for key, per in PIECE_PER_SERV.items():
+        if key in name:
+            # per は '1個' / '0.5片' の形
+            m = _num_re.search(per)
+            num = float(m.group(1)) if m else 1.0
+            unit = per.replace(str(num).rstrip('0').rstrip('.'), '')
+            total = num * servings
+            # 0.5刻みで表現
+            if abs(total - int(total)) < 1e-6:
+                return f"{int(total)}{unit}"
+            return f"{total:g}{unit}"
+
+    # 肉・魚・豆腐・野菜
+    for key, g in PROTEIN_G_PER_SERV.items():
+        if key in name:
+            return _grams_to_pretty(int(g*servings))
+    for key, g in VEG_G_PER_SERV.items():
+        if key in name:
+            return _grams_to_pretty(int(g*servings))
+
+    # 油
+    for key, tsp in OIL_TSP_PER_SERV.items():
+        if key in name:
+            return _round_tsp_to_pretty(tsp*servings)
+
+    # 調味料
+    for key, tsp in COND_TSP_PER_SERV.items():
+        if key in name:
+            return _round_tsp_to_pretty(tsp*servings)
+
+    # 胡椒・一味などは「少々」に
+    if any(k in name for k in ["胡椒","こしょう","黒胡椒","一味","七味","ラー油"]):
+        return "少々"
+
+    # それでも不明なら“適量”を最後の砦として返す
+    return "適量"
+
+def normalize_ingredients(ings: list, servings: int):
+    """Ingredientの配列（.name, .amount を持つ）を“適量→具体量”に置換して返す"""
+    fixed = []
+    for it in ings:
+        amt = (it.amount or "").strip()
+        if (not amt) or ("適量" in amt) or (not _has_number(amt) and "少々" not in amt):
+            amt = _guess_amount(it.name, servings)
+        # 例： '大さじ1.0' → '大さじ1'
+        amt = amt.replace(".0", "")
+        fixed.append(type(it)(name=it.name, amount=amt,
+                              is_optional=getattr(it, "is_optional", False),
+                              substitution=getattr(it, "substitution", None)))
+    return fixed
+
 
 SYSTEM_PROMPT = (
     "あなたは家庭料理アシスタントです。与えられた食材・人数・テーマ・ジャンルから、"
@@ -566,6 +666,9 @@ if submitted:
 
     # レシピ表示
     for rec in data.recommendations:
+        # 材料の量を補正（適量→具体量）
+        rec.ingredients = normalize_ingredients(rec.ingredients, rec.servings)
+
         st.divider()
         st.subheader(rec.recipe_title)
 
