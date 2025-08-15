@@ -491,11 +491,13 @@ if submitted:
             render_right_column(rec, image_mode, max_ai_images, image_size)
 
     # 画像失敗時の簡易ログ（任意）
-    errs = st.session_state.get("img_errors", [])
-if errs:
-    with st.expander("画像取得/生成のエラーメモ", expanded=False):
-        st.code(errs[-1])
-# --- replace end ---
+    err_list = st.session_state.get("img_errors") or []
+    if err_list:
+        with st.expander("画像取得/生成のエラーメモ", expanded=False):
+            st.code(err_list[-1])
+        # 次回に持ち越さないようにクリア（存在チェックつき）
+        st.session_state["img_errors"] = []
+
 
 
 
