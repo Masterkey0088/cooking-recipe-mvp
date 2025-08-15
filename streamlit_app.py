@@ -277,9 +277,8 @@ def _pexels_search_json(query: str, per_page: int = 18, orientation: str = "land
 # 右カラム描画（画像まわりをまとめた関数）
 def render_right_column(rec,
                         image_mode="テキストのみ（現在のまま）",
-                        max_ai_images=4,
                         image_size="1024x1024"):
-    """右側カラムの表示ロジック（Pexels精度アップ対応版）"""
+    """右側カラム：完成写真のみ表示"""
 
     # --- AI画像（OpenAI: gpt-image-1） ---
     if image_mode.startswith("AI画像"):
@@ -290,41 +289,19 @@ def render_right_column(rec,
         if hero_bytes:
             st.image(Image.open(BytesIO(hero_bytes)),
                      caption="完成イメージ", use_container_width=True)
+        return
 
-        step_imgs = []
-        for s in rec.steps[:max_ai_images]:
-            b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
-            step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
-        if step_imgs:
-            st.image(step_imgs, use_container_width=True)
-        return  # ここで終了
-
-    # --- 素材写真（Pexels：埋め込みで再ランク） ---
+    # --- 素材写真（Pexels） ---
     if image_mode.startswith("素材写真"):
-        # 完成皿
         hero_bytes = _stock_dish_image(rec.recipe_title, [i.name for i in rec.ingredients])
         if hero_bytes:
             st.image(Image.open(BytesIO(hero_bytes)),
                      caption="完成イメージ（Photos: Pexels）", use_container_width=True)
-
-        # ★ここがポイント：材料名リストを渡す
-        ing_names = [i.name for i in rec.ingredients]
-
-        step_imgs = []
-        for s in rec.steps[:max_ai_images]:
-            # 変更：_stock_step_image(step_text, ingredients_jp)
-            b = _stock_step_image(s.text, ing_names)
-            step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
-        if step_imgs:
-            st.image(step_imgs, use_container_width=True)
         return
 
-    # --- テキスト画像（従来） ---
-    images = [make_step_image(s) for s in rec.steps[:6]]
-    st.image(images,
-             caption=[f"STEP {s.n}" for s in rec.steps[:6]],
-             use_container_width=True)
-
+    # --- 画像なし（テキストのみ） ---
+    # 何も表示しない（左側に手順テキストは出ています）
+    return
 
 # --- Pexels 画像取得ユーティリティ ---
 def _pexels_search(query: str, per_page: int = 1, orientation: str = "landscape") -> list[str]:
@@ -515,7 +492,6 @@ with st.form("inputs", clear_on_submit=False):
     with img_col1:
         image_mode = st.selectbox("画像タイプ", ["テキストのみ（現在のまま）", "AI画像（生成）"], index=0)
     with img_col2:
-        max_ai_images = st.slider("レシピあたりのAI画像枚数（ステップ）", 1, 6, 4, 1)
     image_size = st.selectbox("画像サイズ", ["1024x1024","1792x1024","1024x1792","512x512"], index=0)
 
     submitted = st.form_submit_button("提案を作成", use_container_width=True)
@@ -598,7 +574,7 @@ if submitted:
 
         with colB:
             # 右カラムは関数を1行で呼ぶだけ（インデント事故を根絶）
-            render_right_column(rec, image_mode, max_ai_images, image_size)
+            render_right_column(rec, image_mode, image_size)
 
     # 画像失敗時の簡易ログ（任意）
     err_list = st.session_state.get("img_errors") or []
