@@ -312,15 +312,18 @@ with img_col2:
 image_size = "768x512"
 
 
+# --- PATCH D: 送信後のみ結果を表示 ---
 if submitted:
     ingredients = [x.strip() for x in ing.split(",") if x.strip()]
     try:
         data = call_openai_for_recipes(ingredients, int(servings), theme, genre, int(max_minutes))
     except Exception as e:
         st.warning(f"LLMエラー。フォールバックに切替: {e}")
+        # 最低1件は返すフォールバック
         rec = Recipe(
             recipe_title="鶏むねともやしの塩炒め",
-            servings=int(servings), theme=theme or "時短", genre=genre or "和風",
+            servings=int(servings),
+            theme=theme or "時短", genre=genre or "和風",
             estimated_time_min=15, difficulty="かんたん",
             ingredients=[Ingredient(name=i, amount="適量") for i in (ingredients[:5] or ["鶏むね肉","もやし","塩","油","こしょう"])],
             equipment=["フライパン","ボウル"],
@@ -334,6 +337,8 @@ if submitted:
         data = RecipeSet(recommendations=[rec])
 
     st.success(f"候補数: {len(data.recommendations)} 件")
+
+    # 一括DL（CSV/MD/画像）
     zip_bytes = build_zip_bytes(data)
     st.download_button(
         "CSV・Markdown・画像をまとめてダウンロード（ZIP）",
@@ -344,59 +349,60 @@ if submitted:
     )
 
     # レシピ表示
-for rec in data.recommendations:
-    st.divider()
-    st.subheader(rec.recipe_title)
+    for rec in data.recommendations:
+        st.divider()
+        st.subheader(rec.recipe_title)
 
-    colA, colB = st.columns([2, 1])
+        colA, colB = st.columns([2, 1])
 
-    with colA:
-        st.markdown(
-            f"- 人数: {rec.servings}人分 / 目安: {rec.estimated_time_min or '-'}分 / 難易度: {rec.difficulty}\n"
-            f"- 器具: {', '.join(rec.equipment)}\n"
-            f"- 安全注記: {', '.join(rec.safety_rules_applied or []) or '-'}"
-        )
-        st.markdown("**材料**")
-        for i in rec.ingredients:
+        with colA:
             st.markdown(
-                f"- {i.amount} {i.name}"
-                + ("（任意）" if i.is_optional else "")
-                + (f" / 代替: {i.substitution}" if i.substitution else "")
+                f"- 人数: {rec.servings}人分 / 目安: {rec.estimated_time_min or '-'}分 / 難易度: {rec.difficulty}\n"
+                f"- 器具: {', '.join(rec.equipment)}\n"
+                f"- 安全注記: {', '.join(rec.safety_rules_applied or []) or '-'}"
             )
-        st.markdown("**手順**")
-        for s in rec.steps:
-            st.markdown(f"{s.n}. {s.text}")
+            st.markdown("**材料**")
+            for i in rec.ingredients:
+                st.markdown(
+                    f"- {i.amount} {i.name}"
+                    + ("（任意）" if i.is_optional else "")
+                    + (f" / 代替: {i.substitution}" if i.substitution else "")
+                )
+            st.markdown("**手順**")
+            for s in rec.steps:
+                st.markdown(f"{s.n}. {s.text}")
 
-    with colB:
-        # もし事前にフォーム（PATCH C）を入れていない場合の保険
-        try:
-            image_mode
-        except NameError:
-            image_mode = "テキストのみ（現在のまま）"
-            max_ai_images = 4
-            image_size = "768x512"
+        with colB:
+            # フォーム側の追加（画像タイプ等）が未導入でも落ちないよう保険
+            try:
+                image_mode
+            except NameError:
+                image_mode = "テキストのみ（現在のまま）"
+                max_ai_images = 4
+                image_size = "768x512"
 
-        if image_mode.startswith("AI画像"):
-            # ヒーロー（完成皿）
-            hero_bytes = _openai_image_bytes(
-                _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
-                size=image_size
-            )
-            if hero_bytes:
-                st.image(Image.open(BytesIO(hero_bytes)), caption="完成イメージ", use_column_width=True)
+            if image_mode.startswith("AI画像"):
+                # 完成皿（ヒーロー）
+                hero_bytes = _openai_image_bytes(
+                    _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
+                    size=image_size
+                )
+                if hero_bytes:
+                    st.image(Image.open(BytesIO(hero_bytes)), caption="完成イメージ", use_column_width=True)
 
-            # ステップ画像（コスト抑制のため先頭N件だけ）
-            step_imgs = []
-            for s in rec.steps[:max_ai_images]:
-                b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
-                if b:
-                    step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}"))
-                else:
-                    step_imgs.append(make_step_image(s))  # 失敗時は従来のテキスト画像
-            if step_imgs:
-                st.image(step_imgs, use_column_width=True)
-        else:
-            # 従来のテキスト画像
-            images = [make_step_image(s) for s in rec.steps[:6]]
-            st.image(images, caption=[f"STEP {s.n}" for s in rec.steps[:6]], use_column_width=True)
+                # ステップ画像（先頭N件だけ生成）
+                step_imgs = []
+                for s in rec.steps[:max_ai_images]:
+                    b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
+                    if b:
+                        step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}"))
+                    else:
+                        step_imgs.append(make_step_image(s))  # 失敗時はテキスト画像にフォールバック
+                if step_imgs:
+                    st.image(step_imgs, use_column_width=True)
+            else:
+                # 従来のテキスト画像
+                images = [make_step_image(s) for s in rec.steps[:6]]
+                st.image(images, caption=[f"STEP {s.n}" for s in rec.steps[:6]], use_column_width=True)
+
 
