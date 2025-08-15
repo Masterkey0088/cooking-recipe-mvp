@@ -450,11 +450,11 @@ for rec in data.recommendations:
     rec.ingredients = normalize_ingredients(rec.ingredients, rec.servings)
     tools = rec.equipment or infer_tools_from_recipe(rec)
 
-    quality_result = quality_check(rec.ingredients, rec.steps)
-    if quality_result["warning"]:
-        st.warning(quality_result["warning"])
-    if quality_result["badge"]:
-        st.success(f"品質バッジ: {quality_result['badge']}")
+    ok, warns = quality_check(rec)
+    if ok:
+        st.success("✅ 一般的な家庭料理として妥当な品質です")
+    else:
+        st.warning("⚠ 品質チェックで改善点があります：\n- " + "\n- ".join(warns))
     
     colA, colB = st.columns([2, 1])
 
