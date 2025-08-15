@@ -579,8 +579,8 @@ if submitted:
                     + (f" / 代替: {i.substitution}" if i.substitution else "")
                 )
             st.markdown("**手順**")
-            for s in rec.steps:
-                st.markdown(f"{s.n}. {s.text}")
+            steps_md = "\n".join([f"1. {s.text}" for s in rec.steps])
+            st.markdown(steps_md)
 
         with colB:
             # 右カラムは関数を1行で呼ぶだけ（インデント事故を根絶）
