@@ -490,9 +490,18 @@ with st.form("inputs", clear_on_submit=False):
     # 画像設定（新規）
     img_col1, img_col2 = st.columns([2,1])
     with img_col1:
-        image_mode = st.selectbox("画像タイプ", ["テキストのみ（現在のまま）", "AI画像（生成）"], index=0)
+    image_mode = st.selectbox(
+        "画像タイプ",
+        ["テキストのみ（現在のまま）", "素材写真（Pexels）", "AI画像（生成）"],
+        index=0
+    )
+
     with img_col2:
-    image_size = st.selectbox("画像サイズ", ["1024x1024","1792x1024","1024x1792","512x512"], index=0)
+    image_size = st.selectbox(
+        "画像サイズ",
+        ["1024x1024", "1792x1024", "1024x1792", "512x512"],
+        index=0
+    )
 
     submitted = st.form_submit_button("提案を作成", use_container_width=True)
 
