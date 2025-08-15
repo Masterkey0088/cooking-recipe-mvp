@@ -214,7 +214,7 @@ _QTY_IN_NAME_RE = re.compile(
     r'|(?:\d+(?:\.\d+)?)\s*(?:g|グラム|kg|㎏|ml|mL|L|cc|カップ|cup|個|片|枚|本)'
     r'|少々|適量'
     r')(?=\s|$)'
-
+)
     
 def split_quantity_from_name(name: str) -> tuple[str, str|None]:
     """材料名から分量表現を1つ拾い、(ベース名, 量) を返す。量が無ければ None。"""
