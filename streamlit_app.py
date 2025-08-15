@@ -437,7 +437,7 @@ if submitted:
                 st.markdown(f"{s.n}. {s.text}")
 
         with colB:
-    pass
+            pass
 
     # フォームの保険（未定義でも落ちないように）
     try:
