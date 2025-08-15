@@ -19,7 +19,7 @@ import streamlit as st
 from pydantic import BaseModel, Field, ValidationError
 
 # ---------- Page config ----------
-st.set_page_config(page_title="晩ごはん一撃レコメンド", layout="wide")
+st.set_page_config(page_title="ごはんの神様に相談だ！", layout="wide")
 
 # ---------- (Optional) Access gate ----------
 ACCESS_CODE = st.secrets.get("APP_ACCESS_CODE") or os.getenv("APP_ACCESS_CODE")
@@ -203,6 +203,32 @@ def normalize_ingredients(ings: List[Ingredient], servings: int) -> List[Ingredi
         ))
     return fixed
 
+# --- 品質チェック（簡易ヒューリスティック） ---
+HEAT_WORDS = ["弱火", "中火", "強火", "沸騰", "余熱", "オーブン", "レンジ"]
+SEASONINGS = ["塩", "砂糖", "しょうゆ", "醤油", "みりん", "酒", "味噌", "酢", "ごま油", "オリーブオイル", "バター", "だし"]
+
+def quality_check(rec) -> tuple[bool, list[str]]:
+    warns = []
+    # 材料・手順の最低要件
+    if len(rec.ingredients) < 3:
+        warns.append("材料が少なすぎます（3品以上を推奨）")
+    if len(rec.steps) < 3:
+        warns.append("手順が少なすぎます（3ステップ以上を推奨）")
+    # 火加減・時間
+    step_text = "。".join([s.text for s in rec.steps])
+    if not any(w in step_text for w in HEAT_WORDS):
+        warns.append("火加減や加熱の記述がありません（弱火/中火/強火 や レンジ時間の明示を推奨）")
+    # 調味料の具体量
+    ing_txt = "、".join([f"{i.name} {i.amount or ''}" for i in rec.ingredients])
+    if not any(s in ing_txt for s in SEASONINGS):
+        warns.append("基本的な調味が見当たりません（塩・しょうゆ・みりん等）")
+    if "適量" in ing_txt:
+        warns.append("“適量”が含まれています（できるだけ小さじ/大さじ/グラム表記に）")
+    # 合否
+    ok = (len(warns) == 0)
+    return ok, warns
+
+
 # ==============================================================
 # Utilities — tools inference
 # ==============================================================
@@ -276,6 +302,9 @@ PROMPT_TMPL = (
     "  ]\n"
     "}\n"
     "Notes: Amounts should avoid vague words like '適量' when possible; prefer grams, tsp/tbsp."
+    # ★追加: 和食の基本比率＆塩分ガイド
+    "For Japanese home cooking, prefer common ratios where applicable (e.g., 醤油:みりん:酒 ≈ 1:1:1 for teriyaki; 味噌汁 みそ ≈ 12–18g per 200ml dashi). "
+    "Provide cooking times and heat levels (弱火/中火/強火) explicitly. Avoid steps that cannot be executed in a home kitchen.\n"
 )
 
 def generate_recipes(ingredients: List[str], servings: int, theme: str, genre: str, max_minutes: int,
@@ -336,7 +365,7 @@ def generate_recipes(ingredients: List[str], servings: int, theme: str, genre: s
 # ==============================================================
 # UI — Header & Form (images OFF)
 # ==============================================================
-st.title("🍳 晩ごはん一撃レコメンド")
+st.title("ごはんの神様に相談だ！")
 
 with st.form("inputs", clear_on_submit=False, border=True):
     st.text_input("冷蔵庫の食材（カンマ区切り）", key="ingredients", placeholder="例）豚肉, キャベツ, ねぎ")
@@ -421,6 +450,12 @@ for rec in data.recommendations:
     rec.ingredients = normalize_ingredients(rec.ingredients, rec.servings)
     tools = rec.equipment or infer_tools_from_recipe(rec)
 
+    quality_result = quality_check(rec.ingredients, rec.steps)
+    if quality_result["warning"]:
+        st.warning(quality_result["warning"])
+    if quality_result["badge"]:
+        st.success(f"品質バッジ: {quality_result['badge']}")
+    
     colA, colB = st.columns([2, 1])
 
     with colA:
