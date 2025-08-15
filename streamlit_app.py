@@ -205,7 +205,15 @@ def normalize_ingredients(ings: list, servings: int):
         )
     return fixed
 
+# --- 材料名に埋まっている分量（大小さじ/グラム/個/片/枚/本/カップ/cc/少々/適量）を検出する正規表現（グローバル） ---
+_QTY_IN_NAME_RE = re.compile(
+    r'(?:^|\s)('
+    r'(?:小さじ|大さじ)\s*\d+(?:\.\d+)?'
+    r'|(?:\d+(?:\.\d+)?)\s*(?:g|グラム|kg|㎏|ml|mL|L|cc|カップ|cup|個|片|枚|本)'
+    r'|少々|適量'
+    r')(?=\s|$)'
 
+    
 def split_quantity_from_name(name: str) -> tuple[str, str|None]:
     """材料名から分量表現を1つ拾い、(ベース名, 量) を返す。量が無ければ None。"""
     if not name:
