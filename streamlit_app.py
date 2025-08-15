@@ -162,10 +162,30 @@ def split_quantity_from_name(name: str) -> tuple[str, Optional[str]]:
 def sanitize_amount(amount: Optional[str]) -> Optional[str]:
     if not amount:
         return None
+    # ★ 追加：単位を日本表記に統一
+    amount = convert_units_to_japanese(amount)
+
     a = amount.strip().replace("．", ".").replace(".0", "")
     if a in {"小さじ0", "大さじ0", "0g", "0個", "0片", "0枚", "0本", "0cc"}:
         return "少々"
     return a
+
+# --- 英語単位 → 日本表記 に統一 ---
+def convert_units_to_japanese(text: str | None) -> str | None:
+    if not text:
+        return text
+    t = text
+    # 大文字・小文字のゆらぎを吸収
+    t = t.replace("tablespoons", "tbsp").replace("Tablespoons", "tbsp").replace("TABLESPOONS", "tbsp")
+    t = t.replace("tablespoon",  "tbsp").replace("Tablespoon",  "tbsp").replace("TABLESPOON",  "tbsp")
+    t = t.replace("teaspoons",   "tsp"). replace("Teaspoons",   "tsp"). replace("TEASPOONS",   "tsp")
+    t = t.replace("teaspoon",    "tsp"). replace("Teaspoon",    "tsp"). replace("TEASPOON",    "tsp")
+    t = t.replace("TBSP", "tbsp").replace("TBS", "tbsp").replace("Tsp", "tsp").replace("TSP", "tsp")
+
+    # 最終置換
+    t = t.replace("tbsp", "大さじ")
+    t = t.replace("tsp",  "小さじ")
+    return t
 
 def normalize_ingredients(ings: List[Ingredient], servings: int) -> List[Ingredient]:
     fixed: List[Ingredient] = []
