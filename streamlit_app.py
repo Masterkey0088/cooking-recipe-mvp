@@ -177,6 +177,38 @@ def _guess_amount(name: str, servings: int) -> str:
     return "適量"
 
 def normalize_ingredients(ings: list, servings: int):
+    import re
+
+# 材料名の中に埋まった分量（大小さじ/グラム/個/片/枚/本/カップ/cc/少々/適量）を検出
+_QTY_IN_NAME_RE = re.compile(
+    r'(?:^|\s)('
+    r'(?:小さじ|大さじ)\s*\d+(?:\.\d+)?'
+    r'|(?:\d+(?:\.\d+)?)\s*(?:g|グラム|kg|㎏|ml|mL|L|cc|カップ|cup|個|片|枚|本)'
+    r'|少々|適量'
+    r')(?=\s|$)'
+)
+    amt = sanitize_amount(amt)
+
+def split_quantity_from_name(name: str) -> tuple[str, str|None]:
+    """材料名から分量表現を1つ拾い、(ベース名, 量) を返す。量が無ければ None。"""
+    if not name:
+        return "", None
+    m = _QTY_IN_NAME_RE.search(name)
+    qty = m.group(1) if m else None
+    base = _QTY_IN_NAME_RE.sub(" ", name).strip()
+    base = re.sub(r'\s{2,}', ' ', base)
+    return base or name, qty
+
+def sanitize_amount(amount: str|None) -> str|None:
+    """不自然な量（小さじ0/0gなど）を自然な表現に補正"""
+    if not amount: 
+        return None
+    a = amount.strip().replace("．", ".")
+    a = a.replace(".0", "")
+    if a in {"小さじ0", "大さじ0", "0g", "0個", "0片", "0枚", "0本", "0cc"}:
+        return "少々"
+    return a
+
     """Ingredientの配列（.name, .amount を持つ）を“適量→具体量”に置換して返す"""
     fixed = []
     for it in ings:
@@ -682,6 +714,9 @@ if submitted:
             )
             st.markdown("**材料**")
             for i in rec.ingredients:
+                base_name, qty_in_name = split_quantity_from_name(i.name)
+                amt = sanitize_amount(getattr(i, "amount", None)) or qty_in_name or "適量"
+                
                 st.markdown(
                     f"- {i.amount} {i.name}"
                     + ("（任意）" if i.is_optional else "")
