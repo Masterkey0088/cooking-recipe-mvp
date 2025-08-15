@@ -446,13 +446,14 @@ if submitted:
         image_size = "1024x1024"
 
     if image_mode.startswith("AI画像"):
-        # ---- OpenAI画像生成（組織Verifyが必要）----
+        # ---- OpenAI画像生成 ----
         hero_bytes = _openai_image_bytes(
             _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
             size=image_size
         )
         if hero_bytes:
-            st.image(Image.open(BytesIO(hero_bytes)), caption="完成イメージ", use_container_width=True)
+            st.image(Image.open(BytesIO(hero_bytes)),
+                     caption="完成イメージ", use_container_width=True)
 
         step_imgs = []
         for s in rec.steps[:max_ai_images]:
@@ -462,10 +463,11 @@ if submitted:
             st.image(step_imgs, use_container_width=True)
 
     elif image_mode.startswith("素材写真"):
-        # ---- Pexelsから素材写真を取得 ----
+        # ---- Pexels 素材写真 ----
         hero_bytes = _stock_dish_image(rec.recipe_title, [i.name for i in rec.ingredients])
         if hero_bytes:
-            st.image(Image.open(BytesIO(hero_bytes)), caption="完成イメージ（Photos: Pexels）", use_container_width=True)
+            st.image(Image.open(BytesIO(hero_bytes)),
+                     caption="完成イメージ（Photos: Pexels）", use_container_width=True)
 
         step_imgs = []
         for s in rec.steps[:max_ai_images]:
@@ -477,7 +479,10 @@ if submitted:
     else:
         # ---- テキスト画像（従来）----
         images = [make_step_image(s) for s in rec.steps[:6]]
-        st.image(images, caption=[f"STEP {s.n}" for s in rec.steps[:6]], use_container_width=True)
+        st.image(images,
+                 caption=[f"STEP {s.n}" for s in rec.steps[:6]],
+                 use_container_width=True)
+
 
 
     # 画像失敗時の簡易ログ（任意）
