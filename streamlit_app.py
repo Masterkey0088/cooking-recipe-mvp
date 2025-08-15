@@ -336,6 +336,7 @@ image_size = "768x512"
 
 
 # --- PATCH D: 送信後のみ結果を表示 ---
+# --- replace from here to the end of the results section ---
 if submitted:
     ingredients = [x.strip() for x in ing.split(",") if x.strip()]
     try:
@@ -358,20 +359,17 @@ if submitted:
             safety_rules_applied=infer_safety_notes(ingredients),
         )
         data = RecipeSet(recommendations=[rec])
-        errs = st.session_state.get("img_errors", [])
-if image_mode.startswith("AI画像") and errs: st.info(f"AI画像の生成に失敗した可能性があります。詳細: {errs[-1][:160]}…")
-
 
     st.success(f"候補数: {len(data.recommendations)} 件")
 
-    # 一括DL（CSV/MD/画像）
+    # ダウンロード（CSV/MD/画像）
     zip_bytes = build_zip_bytes(data)
     st.download_button(
         "CSV・Markdown・画像をまとめてダウンロード（ZIP）",
         data=zip_bytes,
         file_name=f"recipes_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
         mime="application/zip",
-        use_container_width=True
+        use_container_width=True,
     )
 
     # レシピ表示
@@ -398,29 +396,48 @@ if image_mode.startswith("AI画像") and errs: st.info(f"AI画像の生成に失
             for s in rec.steps:
                 st.markdown(f"{s.n}. {s.text}")
 
-       with colB:
-    if image_mode.startswith("AI画像"):
-        # 完成皿（ヒーロー）
-        hero_bytes = _openai_image_bytes(
-            _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
-            size=image_size
-        )
-        if hero_bytes:
-            st.image(Image.open(BytesIO(hero_bytes)), caption="完成イメージ", use_container_width=True)
+        with colB:
+            # フォームで追加した画像設定（未定義でも落ちない保険）
+            try:
+                image_mode
+            except NameError:
+                image_mode = "テキストのみ（現在のまま）"
+                max_ai_images = 4
+                image_size = "1024x1024"
 
-        # ステップ画像（先頭N件のみ生成）
-        step_imgs = []
-        for s in rec.steps[:max_ai_images]:
-            b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
-            if b:
-                step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}"))
+            if image_mode.startswith("AI画像"):
+                # 完成皿（ヒーロー画像）
+                hero_bytes = _openai_image_bytes(
+                    _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
+                    size=image_size
+                )
+                if hero_bytes:
+                    st.image(Image.open(BytesIO(hero_bytes)),
+                             caption="完成イメージ", use_container_width=True)
+
+                # ステップ画像（先頭N件のみ生成）
+                step_imgs = []
+                for s in rec.steps[:max_ai_images]:
+                    b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
+                    if b:
+                        step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}"))
+                    else:
+                        step_imgs.append(make_step_image(s))  # 失敗時はテキスト画像
+                if step_imgs:
+                    st.image(step_imgs, use_container_width=True)
             else:
-                step_imgs.append(make_step_image(s))  # 失敗時はテキスト画像
-        if step_imgs:
-            st.image(step_imgs, use_container_width=True)
-    else:
-        # テキスト画像のみ（従来）
-        images = [make_step_image(s) for s in rec.steps[:6]]
-        st.image(images, caption=[f"STEP {s.n}" for s in rec.steps[:6]], use_container_width=True)
+                # テキスト画像のみ
+                images = [make_step_image(s) for s in rec.steps[:6]]
+                st.image(images,
+                         caption=[f"STEP {s.n}" for s in rec.steps[:6]],
+                         use_container_width=True)
+
+    # 画像失敗時の簡易ログ（任意）
+    errs = st.session_state.get("img_errors", [])
+    if image_mode.startswith("AI画像") and errs:
+        with st.expander("AI画像の生成に失敗しました（詳細を見る）", expanded=False):
+            st.code(errs[-1])
+# --- replace end ---
+
 
 
