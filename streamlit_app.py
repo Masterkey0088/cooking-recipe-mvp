@@ -641,35 +641,32 @@ def build_zip_bytes(data: RecipeSet) -> bytes:
     return buf.getvalue()
 
 st.title("🍳 晩ごはん一撃レコメンド（Streamlit版）")
-with st.form("inputs", clear_on_submit=False):
-    ing = st.text_input("冷蔵庫の食材（カンマ区切り）", "鶏むね肉, キャベツ, ねぎ")
-    col1, col2, col3 = st.columns([1,1,1])
+# ---- 入力フォーム（画像UIを非表示にした版） ----
+with st.form("inputs", clear_on_submit=False, border=True):
+    # 1行目：食材
+    st.text_input("冷蔵庫の食材（カンマ区切り）", key="ingredients", placeholder="例）豚肉, キャベツ, ねぎ")
+
+    # 2行目：人数・テーマ・ジャンル
+    col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
-        servings = st.slider("人数", 1, 6, 3, 1)
+        st.slider("人数", 1, 6, 2, 1, key="servings")
     with col2:
-        theme = st.selectbox("テーマ", ["", "時短", "節約", "子ども向け", "ヘルシー"], index=1)
+        st.selectbox("テーマ", ["時短", "節約", "栄養重視", "子ども向け", "おもてなし"], index=1, key="theme")
     with col3:
-        genre = st.selectbox("ジャンル", ["", "和風", "洋風", "中華", "韓国風", "エスニック"], index=1)
-    max_minutes = st.slider("最大調理時間（分）", 10, 60, 30, 5)
+        st.selectbox("ジャンル", ["和風", "洋風", "中華風", "韓国風", "エスニック"], index=0, key="genre")
 
-    # 画像設定（新規）
-    img_col1, img_col2 = st.columns([2, 1])
+    # 3行目：最大時間のみ（画像設定は削除）
+    st.slider("最大調理時間（分）", 5, 60, 30, 5, key="max_minutes")
 
-    with img_col1:
-        image_mode = st.selectbox(
-            "画像タイプ",
-            ["テキストのみ（現在のまま）", "素材写真（Pexels）", "AI画像（生成）"],
-            index=0
-        )
-
-    with img_col2:
-        image_size = st.selectbox(
-            "画像サイズ",
-            ["1024x1024", "1792x1024", "1024x1792", "512x512"],
-            index=0
-        )
+    # 画像機能は使わないので、内部的なデフォルトをここで固定しておく
+    # （後段のコードが image_mode / image_size を参照しても NameError にならないように）
+    st.session_state["image_mode"] = "テキストのみ（現在のまま）"
+    st.session_state["image_size"] = "1024x1024"
+    st.session_state["max_ai_images"] = 0  # 念のため
 
     submitted = st.form_submit_button("提案を作成", use_container_width=True)
+# ---- 入力フォームここまで ----
+
 
 # --- PATCH C: フォームに項目追加 ---
 img_col1, img_col2 = st.columns([2,1])
