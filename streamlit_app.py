@@ -437,6 +437,8 @@ if submitted:
                 st.markdown(f"{s.n}. {s.text}")
 
         with colB:
+    pass
+
     # フォームの保険（未定義でも落ちないように）
     try:
         image_mode
