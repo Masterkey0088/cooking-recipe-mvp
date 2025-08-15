@@ -188,6 +188,45 @@ def make_step_image(step, w=900, h=600, bg=(248,248,248)):
     draw.rectangle([0,0,w-1,h-1], outline=(210,210,210), width=1)
     return img
 
+# --- Pexels 画像取得ユーティリティ ---
+def _pexels_search(query: str, per_page: int = 1, orientation: str = "landscape") -> list[str]:
+    key = os.getenv("PEXELS_API_KEY") or st.secrets.get("PEXELS_API_KEY", None)
+    if not key:
+        st.session_state.setdefault("img_errors", []).append("PEXELS_API_KEY が未設定です（Secretsに追加してください）")
+        return []
+    try:
+        r = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers={"Authorization": key},
+            params={"query": query, "per_page": per_page, "orientation": orientation}
+        )
+        if r.status_code != 200:
+            st.session_state.setdefault("img_errors", []).append(f"Pexels {r.status_code}: {r.text[:160]}")
+            return []
+        data = r.json()
+        return [p["src"]["large"] for p in data.get("photos", [])]
+    except Exception as e:
+        st.session_state.setdefault("img_errors", []).append(str(e))
+        return []
+
+def _fetch_image_bytes(url: str) -> bytes | None:
+    try:
+        r = requests.get(url, timeout=20); r.raise_for_status()
+        return r.content
+    except Exception as e:
+        st.session_state.setdefault("img_errors", []).append(str(e))
+        return None
+
+def _stock_dish_image(recipe_title: str, ingredients: list[str]) -> bytes | None:
+    q = f"{recipe_title} {', '.join(ingredients[:3])} dish food"
+    urls = _pexels_search(q, per_page=1)
+    return _fetch_image_bytes(urls[0]) if urls else None
+
+def _stock_step_image(step_text: str) -> bytes | None:
+    q = f"{step_text} cooking kitchen"
+    urls = _pexels_search(q, per_page=1)
+    return _fetch_image_bytes(urls[0]) if urls else None
+
 @st.cache_data(show_spinner=False)
 def _openai_image_bytes(prompt: str, size: str = "1024x1024", model: str = "gpt-image-1") -> bytes | None:
     """OpenAI画像APIでPNGバイト列を返す（同一プロンプトはキャッシュ）"""
@@ -325,10 +364,11 @@ with st.form("inputs", clear_on_submit=False):
 img_col1, img_col2 = st.columns([2,1])
 with img_col1:
     image_mode = st.selectbox(
-        "画像タイプ",
-        ["テキストのみ（現在のまま）", "AI画像（生成）"],
-        index=0
-    )
+    "画像タイプ",
+    ["テキストのみ（現在のまま）", "AI画像（生成）", "素材写真（Pexels）"],  # ← 追加
+    index=0
+)
+
 with img_col2:
     max_ai_images = st.slider("レシピあたりのAI画像枚数（ステップ）", 1, 6, 4, 1)
 # 画像サイズはお好みで。大きいほど遅くコスト高。
@@ -397,46 +437,54 @@ if submitted:
                 st.markdown(f"{s.n}. {s.text}")
 
         with colB:
-            # フォームで追加した画像設定（未定義でも落ちない保険）
-            try:
-                image_mode
-            except NameError:
-                image_mode = "テキストのみ（現在のまま）"
-                max_ai_images = 4
-                image_size = "1024x1024"
+    # フォームの保険（未定義でも落ちないように）
+    try:
+        image_mode
+    except NameError:
+        image_mode = "テキストのみ（現在のまま）"
+        max_ai_images = 4
+        image_size = "1024x1024"
 
-            if image_mode.startswith("AI画像"):
-                # 完成皿（ヒーロー画像）
-                hero_bytes = _openai_image_bytes(
-                    _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
-                    size=image_size
-                )
-                if hero_bytes:
-                    st.image(Image.open(BytesIO(hero_bytes)),
-                             caption="完成イメージ", use_container_width=True)
+    if image_mode.startswith("AI画像"):
+        # ---- OpenAI画像生成（組織Verifyが必要）----
+        hero_bytes = _openai_image_bytes(
+            _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
+            size=image_size
+        )
+        if hero_bytes:
+            st.image(Image.open(BytesIO(hero_bytes)), caption="完成イメージ", use_container_width=True)
 
-                # ステップ画像（先頭N件のみ生成）
-                step_imgs = []
-                for s in rec.steps[:max_ai_images]:
-                    b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
-                    if b:
-                        step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}"))
-                    else:
-                        step_imgs.append(make_step_image(s))  # 失敗時はテキスト画像
-                if step_imgs:
-                    st.image(step_imgs, use_container_width=True)
-            else:
-                # テキスト画像のみ
-                images = [make_step_image(s) for s in rec.steps[:6]]
-                st.image(images,
-                         caption=[f"STEP {s.n}" for s in rec.steps[:6]],
-                         use_container_width=True)
+        step_imgs = []
+        for s in rec.steps[:max_ai_images]:
+            b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
+            step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
+        if step_imgs:
+            st.image(step_imgs, use_container_width=True)
+
+    elif image_mode.startswith("素材写真"):
+        # ---- Pexelsから素材写真を取得 ----
+        hero_bytes = _stock_dish_image(rec.recipe_title, [i.name for i in rec.ingredients])
+        if hero_bytes:
+            st.image(Image.open(BytesIO(hero_bytes)), caption="完成イメージ（Photos: Pexels）", use_container_width=True)
+
+        step_imgs = []
+        for s in rec.steps[:max_ai_images]:
+            b = _stock_step_image(s.text)
+            step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}") if b else make_step_image(s))
+        if step_imgs:
+            st.image(step_imgs, use_container_width=True)
+
+    else:
+        # ---- テキスト画像（従来）----
+        images = [make_step_image(s) for s in rec.steps[:6]]
+        st.image(images, caption=[f"STEP {s.n}" for s in rec.steps[:6]], use_container_width=True)
+
 
     # 画像失敗時の簡易ログ（任意）
     errs = st.session_state.get("img_errors", [])
-    if image_mode.startswith("AI画像") and errs:
-        with st.expander("AI画像の生成に失敗しました（詳細を見る）", expanded=False):
-            st.code(errs[-1])
+if errs:
+    with st.expander("画像取得/生成のエラーメモ", expanded=False):
+        st.code(errs[-1])
 # --- replace end ---
 
 
