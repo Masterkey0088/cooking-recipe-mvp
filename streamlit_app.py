@@ -11,6 +11,12 @@ from PIL import Image, ImageDraw, ImageFont
 from openai import OpenAI
 import pandas as pd
 
+import re  # ファイルの先頭付近にあるはずのimport文の近くに追加
+
+def strip_step_prefix(text: str) -> str:
+    """先頭の数字やSTEP表記を除去して返す"""
+    return re.sub(r'^(STEP\s*\d+[:.\s-]*|\d+[.:、\s-]*)\s*', '', text)
+
 st.set_page_config(page_title="🍳 晩ごはん一撃レコメンド", layout="wide")
 
 SHOW_STEP_IMAGES = False   # 工程写真は表示しない（完成写真のみ表示）
