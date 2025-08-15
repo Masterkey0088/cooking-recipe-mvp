@@ -177,17 +177,34 @@ def _guess_amount(name: str, servings: int) -> str:
     return "適量"
 
 def normalize_ingredients(ings: list, servings: int):
-    import re
+    """'適量' をできるだけ具体量にし、材料名に混ざった分量を取り出して二重表記を防ぐ"""
+    fixed = []
+    for it in ings:
+        # 材料名に紛れた分量（例: '豚肉 200g', 'にんにく 1片'）を分離
+        base_name, qty_in_name = split_quantity_from_name(it.name)
 
-# 材料名の中に埋まった分量（大小さじ/グラム/個/片/枚/本/カップ/cc/少々/適量）を検出
-_QTY_IN_NAME_RE = re.compile(
-    r'(?:^|\s)('
-    r'(?:小さじ|大さじ)\s*\d+(?:\.\d+)?'
-    r'|(?:\d+(?:\.\d+)?)\s*(?:g|グラム|kg|㎏|ml|mL|L|cc|カップ|cup|個|片|枚|本)'
-    r'|少々|適量'
-    r')(?=\s|$)'
-)
-    amt = sanitize_amount(amt)
+        # amount を優先。なければ材料名から拾った量。それもなければ推定。
+        amt = (getattr(it, "amount", None) or "").strip()
+        amt = sanitize_amount(amt) or qty_in_name or ""
+
+        # 依然として空/適量/数値が無い場合は推定値で補完
+        if (not amt) or ("適量" in amt) or (not _has_number(amt) and "少々" not in amt):
+            amt = _guess_amount(base_name, servings)
+
+        # 仕上げ整形（小さじ0 → 少々、'1.0' → '1' など）
+        amt = sanitize_amount(amt) or "適量"
+
+        # 元の型(Ingredient)を保ったまま新レコードを作成
+        fixed.append(
+            type(it)(
+                name=base_name,
+                amount=amt,
+                is_optional=getattr(it, "is_optional", False),
+                substitution=getattr(it, "substitution", None),
+            )
+        )
+    return fixed
+
 
 def split_quantity_from_name(name: str) -> tuple[str, str|None]:
     """材料名から分量表現を1つ拾い、(ベース名, 量) を返す。量が無ければ None。"""
