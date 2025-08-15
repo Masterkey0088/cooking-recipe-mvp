@@ -437,9 +437,7 @@ if submitted:
                 st.markdown(f"{s.n}. {s.text}")
 
         with colB:
-            pass
-
-    # フォームの保険（未定義でも落ちないように）
+            # フォームの保険（未定義でも落ちないように）
     try:
         image_mode
     except NameError:
@@ -448,7 +446,7 @@ if submitted:
         image_size = "1024x1024"
 
     if image_mode.startswith("AI画像"):
-        # ---- OpenAI画像生成 ----
+        # ---- OpenAI画像生成（組織Verifyが必要）----
         hero_bytes = _openai_image_bytes(
             _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
             size=image_size
@@ -484,8 +482,6 @@ if submitted:
         st.image(images,
                  caption=[f"STEP {s.n}" for s in rec.steps[:6]],
                  use_container_width=True)
-
-
 
     # 画像失敗時の簡易ログ（任意）
     errs = st.session_state.get("img_errors", [])
