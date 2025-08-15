@@ -13,6 +13,8 @@ import pandas as pd
 
 st.set_page_config(page_title="🍳 晩ごはん一撃レコメンド", layout="wide")
 
+SHOW_STEP_IMAGES = False   # 工程写真は表示しない（完成写真のみ表示）
+
 API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
 if not API_KEY:
     st.error("OPENAI_API_KEY が未設定です。Streamlit Cloud の Secrets に追加してください。")
