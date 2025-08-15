@@ -205,6 +205,8 @@ def normalize_ingredients(ings: list, servings: int):
         )
     return fixed
 
+import re  # まだ無ければインポート群に追加
+
 # --- 材料名に埋まっている分量（大小さじ/グラム/個/片/枚/本/カップ/cc/少々/適量）を検出する正規表現（グローバル） ---
 _QTY_IN_NAME_RE = re.compile(
     r'(?:^|\s)('
