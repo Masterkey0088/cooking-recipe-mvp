@@ -745,7 +745,7 @@ if submitted:
                 amt = sanitize_amount(getattr(i, "amount", None)) or qty_in_name or "適量"
                 
                 st.markdown(
-                    f"- {i.amount} {i.name}"
+                    f"- {base_name} {amt}"
                     + ("（任意）" if i.is_optional else "")
                     + (f" / 代替: {i.substitution}" if i.substitution else "")
                 )
