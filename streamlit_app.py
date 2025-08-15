@@ -3,12 +3,6 @@ import os, io, re, json, textwrap, zipfile, datetime, requests
 import base64
 from io import BytesIO
 
-code_needed = st.secrets.get("APP_ACCESS_CODE")
-if code_needed:
-    code = st.text_input("アクセスコード", type="password")
-    if code != code_needed:
-        st.stop()
-
 from typing import List, Optional, Literal, Tuple
 
 import streamlit as st
