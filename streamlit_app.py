@@ -1,4 +1,8 @@
 import os, io, re, json, textwrap, zipfile, datetime, requests
+# --- PATCH A: imports 追加 ---
+import base64
+from io import BytesIO
+
 from typing import List, Optional, Literal, Tuple
 
 import streamlit as st
@@ -183,6 +187,56 @@ def make_step_image(step, w=900, h=600, bg=(248,248,248)):
         draw.multiline_text((pad,h-90), warn, font=warn_font, fill=(180,0,0), spacing=4)
     draw.rectangle([0,0,w-1,h-1], outline=(210,210,210), width=1)
     return img
+# --- PATCH B: 画像生成ユーティリティ ---
+@st.cache_data(show_spinner=False)
+def _openai_image_bytes(prompt: str, size: str = "768x512", model: str = "gpt-image-1") -> bytes:
+    """
+    OpenAI 画像APIで生成し、PNGバイト列を返す。キャッシュで同一プロンプトは再利用。
+    """
+    try:
+        img = client.images.generate(model=model, prompt=prompt, size=size)
+        b64 = img.data[0].b64_json
+        return base64.b64decode(b64)
+    except Exception as e:
+        # ここでは例外は投げず None を返し、呼び出し側でフォールバック
+        return None
+
+def _overlay_caption(png_bytes: bytes, caption: str) -> Image.Image:
+    """ 画像下部に半透明帯＋白文字キャプションを重ねる """
+    im = Image.open(BytesIO(png_bytes)).convert("RGBA")
+    w, h = im.size
+    overlay = Image.new("RGBA", im.size, (0,0,0,0))
+    draw = ImageDraw.Draw(overlay)
+
+    # 帯の高さ（2〜4行ぶん）
+    band_h = max(80, int(h*0.18))
+    draw.rectangle([0, h-band_h, w, h], fill=(0,0,0,140))
+
+    # 文字の折返し
+    font = _load_font(28)
+    import textwrap
+    wrapped = "\n".join(textwrap.wrap(caption.replace("\n"," "), width=28))
+    # 余白
+    pad = 18
+    draw.multiline_text((pad, h-band_h+pad), wrapped, font=font, fill=(255,255,255,230), spacing=6)
+
+    out = Image.alpha_composite(im, overlay).convert("RGB")
+    return out
+
+def _dish_prompt(recipe_title: str, ingredients: list[str]) -> str:
+    ing = ", ".join(ingredients[:5])
+    return (
+        f"完成した料理の写真。料理名: {recipe_title}。主な食材: {ing}。"
+        "日本の家庭料理の盛り付け、自然光、木のテーブル、被写界深度浅め。"
+        "人物の顔・ロゴは映さない。リアル写真風、彩度はやや控えめ。"
+    )
+
+def _step_prompt(step_text: str) -> str:
+    return (
+        f"家庭のキッチンでの調理過程の手元写真。内容: {step_text}。"
+        "まな板やフライパンなどを手元アップで。人物の顔・ブランドロゴは映さない。"
+        "自然光、清潔感、リアル写真風。"
+    )
 
 def recipes_to_dataframes(data: RecipeSet) -> Tuple[pd.DataFrame,pd.DataFrame,pd.DataFrame]:
     rec_rows=[{"recipe_title": r.recipe_title, "servings": r.servings,
@@ -244,6 +298,19 @@ with st.form("inputs", clear_on_submit=False):
     with col3: genre = st.selectbox("ジャンル", ["", "和風", "洋風", "中華", "韓国風", "エスニック"], index=1)
     max_minutes = st.slider("最大調理時間（分）", 10, 60, 30, 5)
     submitted = st.form_submit_button("提案を作成", use_container_width=True)
+# --- PATCH C: フォームに項目追加 ---
+img_col1, img_col2 = st.columns([2,1])
+with img_col1:
+    image_mode = st.selectbox(
+        "画像タイプ",
+        ["テキストのみ（現在のまま）", "AI画像（生成）"],
+        index=0
+    )
+with img_col2:
+    max_ai_images = st.slider("レシピあたりのAI画像枚数（ステップ）", 1, 6, 4, 1)
+# 画像サイズはお好みで。大きいほど遅くコスト高。
+image_size = "768x512"
+
 
 if submitted:
     ingredients = [x.strip() for x in ing.split(",") if x.strip()]
@@ -293,5 +360,27 @@ if submitted:
             st.markdown("**手順**")
             for s in rec.steps: st.markdown(f"{s.n}. {s.text}")
         with colB:
-            images = [make_step_image(s) for s in rec.steps[:6]]
-            st.image(images, caption=[f"STEP {s.n}" for s in rec.steps[:6]], use_column_width=True)
+    if image_mode.startswith("AI画像"):
+        # ヒーロー画像（完成皿）
+        hero_bytes = _openai_image_bytes(
+            _dish_prompt(rec.recipe_title, [i.name for i in rec.ingredients]),
+            size=image_size
+        )
+        if hero_bytes:
+            st.image(Image.open(BytesIO(hero_bytes)), caption="完成イメージ", use_column_width=True)
+
+        # ステップ画像（コスト抑制のため先頭N件のみ）
+        step_imgs = []
+        for s in rec.steps[:max_ai_images]:
+            b = _openai_image_bytes(_step_prompt(s.text), size=image_size)
+            if b:
+                step_imgs.append(_overlay_caption(b, f"STEP {s.n}  {s.text}"))
+            else:
+                # 失敗時は従来のテキスト画像にフォールバック
+                step_imgs.append(make_step_image(s))
+        if step_imgs:
+            st.image(step_imgs, use_column_width=True)
+    else:
+        # 従来のテキスト画像のみ
+        images = [make_step_image(s) for s in rec.steps[:6]]
+        st.image(images, caption=[f"STEP {s.n}" for s in rec.steps[:6]], use_column_width=True)
