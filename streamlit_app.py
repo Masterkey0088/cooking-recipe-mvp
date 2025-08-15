@@ -258,23 +258,37 @@ PROMPT_TMPL = (
     "Notes: Amounts should avoid vague words like '適量' when possible; prefer grams, tsp/tbsp."
 )
 
-def generate_recipes(ingredients: List[str], servings: int, theme: str, genre: str, max_minutes: int) -> RecipeSet:
+def generate_recipes(ingredients: List[str], servings: int, theme: str, genre: str, max_minutes: int,
+                     want_keyword: str = "", avoid_keywords: List[str] | None = None) -> RecipeSet:
+    avoid_keywords = avoid_keywords or []
+
     # LLM path
     if _client is not None:
         try:
             sys = "あなたは日本語で回答する料理アシスタントです。"
+            # 追加ルールの説明文
+            avoid_line = ("除外: " + ", ".join(avoid_keywords)) if avoid_keywords else "除外: なし"
+            want_line  = ("希望: " + want_keyword) if want_keyword else "希望: なし"
+
             usr = (
                 f"食材: {', '.join(ingredients) if ingredients else '（未指定）'}\n"
                 f"人数: {servings}人\n"
                 f"テーマ: {theme}\nジャンル: {genre}\n"
                 f"最大調理時間: {max_minutes}分\n"
-                "JSONのみを返して下さい。"
+                f"{want_line}\n{avoid_line}\n"
+                "要件:\n"
+                "- 出力は必ずSTRICTなJSONのみ（マークダウン不可）\n"
+                "- 除外キーワードを含む料理名は絶対に出さない\n"
+                "- 希望キーワードがあれば、少なくとも1件はその語に非常に近い料理名にする\n"
+                "- 量は可能な限り具体（g, 小さじ/大さじ, 個/片）で、\"適量\"は避ける\n"
             )
+
+            prompt = PROMPT_TMPL  # 既存のスキーマ説明を再利用
             resp = _client.chat.completions.create(
                 model="gpt-4o-mini",
                 temperature=0.6,
                 messages=[
-                    {"role": "system", "content": PROMPT_TMPL},
+                    {"role": "system", "content": prompt + "\n" + sys},
                     {"role": "user", "content": usr},
                 ],
             )
@@ -285,7 +299,8 @@ def generate_recipes(ingredients: List[str], servings: int, theme: str, genre: s
         except Exception as e:
             st.info(f"LLMの構造化生成に失敗したためフォールバックします: {e}")
 
-    # Fallback path — simple heuristic one-recipe
+    # Fallback path — want_keyword に寄せた1件をでっちあげ（最低限）
+    title = (want_keyword or f"かんたん炒め（{genre}風）").strip()
     base_ings = [Ingredient(name=x) for x in ingredients[:6]] or [Ingredient(name="鶏むね肉"), Ingredient(name="キャベツ")]
     steps = [
         Step(text="材料を食べやすい大きさに切る"),
@@ -293,7 +308,7 @@ def generate_recipes(ingredients: List[str], servings: int, theme: str, genre: s
         Step(text="しょうゆ・みりん・酒で味付けして全体を絡める"),
     ]
     rec = Recipe(
-        title=f"かんたん炒め（{genre}風）", servings=servings, total_time_min=min(20, max_minutes),
+        title=title, servings=servings, total_time_min=min(20, max_minutes),
         difficulty="かんたん", ingredients=base_ings, steps=steps, equipment=None
     )
     return RecipeSet(recommendations=[rec])
@@ -313,7 +328,9 @@ with st.form("inputs", clear_on_submit=False, border=True):
     with c3:
         st.selectbox("ジャンル", ["和風", "洋風", "中華風", "韓国風", "エスニック"], index=0, key="genre")
     st.slider("最大調理時間（分）", 5, 90, 30, 5, key="max_minutes")
-
+    st.text_input("作りたい料理名・キーワード（任意）", key="want_keyword", placeholder="例）麻婆豆腐、ナスカレー")
+    st.text_input("除外したい料理名・キーワード（カンマ区切り・任意）", key="avoid_keywords", placeholder="例）麻婆豆腐, カレー")
+    
     # Image settings OFF but keep defaults to avoid NameError downstream
     st.session_state["image_mode"] = "テキストのみ（現在のまま）"
     st.session_state["image_size"] = "1024x1024"
@@ -326,6 +343,9 @@ with st.form("inputs", clear_on_submit=False, border=True):
 # --------------------------------------------------------------
 ing_text = st.session_state.get("ingredients", "") or ""
 ingredients_raw = [s for s in (t.strip() for t in re.split(r"[、,]", ing_text)) if s]
+# --- 追加の希望/除外キーワード ---
+want_keyword = (st.session_state.get("want_keyword") or "").strip()
+avoid_keywords = [s for s in (t.strip() for t in re.split(r"[、,]", st.session_state.get("avoid_keywords") or "")) if s]
 servings = int(st.session_state.get("servings", 2))
 theme = st.session_state.get("theme", "節約")
 genre = st.session_state.get("genre", "和風")
@@ -338,7 +358,10 @@ if not submitted:
 # Generate & render
 # ==============================================================
 try:
-    data = generate_recipes(ingredients_raw, servings, theme, genre, max_minutes)
+    data = generate_recipes(
+    ingredients_raw, servings, theme, genre, max_minutes,
+    want_keyword=want_keyword, avoid_keywords=avoid_keywords
+)
 except Exception as e:
     st.error(f"レシピ生成に失敗しました: {e}")
     st.stop()
@@ -346,6 +369,29 @@ except Exception as e:
 if not data or not data.recommendations:
     st.warning("候補が作成できませんでした。入力を見直してください。")
     st.stop()
+
+def _contains_any(hay: str, needles: List[str]) -> bool:
+    h = (hay or "").lower()
+    return any(n.lower() in h for n in needles)
+
+# 1) 除外（タイトルにNG語が含まれるものを落とす）
+if avoid_keywords:
+    data.recommendations = [r for r in data.recommendations if not _contains_any(r.recipe_title, avoid_keywords)]
+
+# 2) 希望キーワードがあれば、マッチするものを先頭に
+if want_keyword:
+    matched = [r for r in data.recommendations if want_keyword.lower() in (r.recipe_title or "").lower()]
+    others  = [r for r in data.recommendations if r not in matched]
+    data.recommendations = matched + others
+
+# 3) すべて落ちた/合わなかった場合の救済（1回だけ再生成 or フォールバック）
+if not data.recommendations:
+    st.info("除外条件で全ての候補が外れたため、条件を踏まえて再生成します。")
+    data = generate_recipes(
+        ingredients_raw, servings, theme, genre, max_minutes,
+        want_keyword=want_keyword, avoid_keywords=avoid_keywords
+    )
+
 
 for rec in data.recommendations:
     st.divider()
