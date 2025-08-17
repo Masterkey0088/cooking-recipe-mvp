@@ -3,6 +3,7 @@
 # 方式A：Secretsの APP_MODE によりベータ/開発を切替
 #   - APP_MODE = "beta"  → ベータ版（テストユーザー向け、安定設定）
 #   - APP_MODE = "dev"   → 開発版（フィードバック反映の実験設定）
+#   - APP_MODE = "prod"  → 本番版
 # 必須Secrets: OPENAI_API_KEY（OpenAI使用時）、任意: APP_MODE, APP_ACCESS_CODE
 
 from __future__ import annotations
@@ -19,8 +20,9 @@ from pydantic import BaseModel, Field
 # ------------------------------------------------------------
 APP_MODE = (st.secrets.get("APP_MODE") or os.getenv("APP_MODE") or "beta").lower()
 IS_DEV = APP_MODE in ("dev", "development")
+IS_PROD = APP_MODE in ("prod", "production")
 
-APP_TITLE = "ごはんの神様に相談だ！" + ("（開発版）" if IS_DEV else "（ベータ版）")
+APP_TITLE = "ごはんの神様に相談だ！" + ("（開発版）" if IS_DEV else ("（本番）" if IS_PROD else "（ベータ版）"))
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(f"🍳 {APP_TITLE}")
 
@@ -266,7 +268,6 @@ def quality_check(rec) -> tuple[bool, List[str]]:
     ok = (len(warns) == 0)
     return ok, warns
 
-# 品質フィルタ設定（方式AのFEATURESから）
 def _filter_passed_recipes(recommendations: List[Recipe]) -> List[Recipe]:
     passed = []
     for r in recommendations:
@@ -274,6 +275,134 @@ def _filter_passed_recipes(recommendations: List[Recipe]) -> List[Recipe]:
         if ok:
             passed.append(r)
     return passed
+
+# ============================================================
+# 🔥 栄養プロファイル & 概算ロジック（ここから新規追加）
+# ============================================================
+NUTRI_PROFILES = {
+    "ふつう":   {"kcal": (500, 800), "protein_g": (20, 35), "salt_g": (0, 2.5)},
+    "ダイエット": {"kcal": (350, 600), "protein_g": (25, 40), "salt_g": (0, 2.0)},
+    "がっつり": {"kcal": (700,1000), "protein_g": (35, 55), "salt_g": (0, 3.0)},
+    "減塩":     {"kcal": (500, 800), "protein_g": (20, 35), "salt_g": (0, 2.0)},
+}
+
+FOODS = {
+    # たんぱく源（100g）
+    "鶏むね肉": {"kcal":120, "protein_g":23, "fat_g":2,  "carb_g":0,  "salt_g":0},
+    "鶏もも肉": {"kcal":200, "protein_g":17, "fat_g":14, "carb_g":0,  "salt_g":0},
+    "豚肉":     {"kcal":242, "protein_g":20, "fat_g":19, "carb_g":0,  "salt_g":0},
+    "牛肉":     {"kcal":250, "protein_g":20, "fat_g":19, "carb_g":0,  "salt_g":0},
+    "ひき肉":   {"kcal":230, "protein_g":19, "fat_g":17, "carb_g":0,  "salt_g":0},
+    "鮭":       {"kcal":200, "protein_g":22, "fat_g":12, "carb_g":0,  "salt_g":0},
+    "木綿豆腐": {"kcal":72,  "protein_g":7,  "fat_g":4,  "carb_g":2,  "salt_g":0},
+    "絹ごし豆腐":{"kcal":56, "protein_g":5,  "fat_g":3,  "carb_g":2,  "salt_g":0},
+
+    # 野菜（100g）
+    "キャベツ": {"kcal":23, "protein_g":1, "fat_g":0, "carb_g":5, "salt_g":0},
+    "玉ねぎ":   {"kcal":37, "protein_g":1, "fat_g":0, "carb_g":9, "salt_g":0},
+    "にんじん": {"kcal":37, "protein_g":1, "fat_g":0, "carb_g":9, "salt_g":0},
+    "じゃがいも":{"kcal":76,"protein_g":2, "fat_g":0, "carb_g":17,"salt_g":0},
+    "なす":     {"kcal":22, "protein_g":1, "fat_g":0, "carb_g":5, "salt_g":0},
+    "もやし":   {"kcal":14, "protein_g":2, "fat_g":0, "carb_g":3, "salt_g":0},
+
+    # 主食（100g）
+    "ご飯":     {"kcal":168,"protein_g":2.5,"fat_g":0.3,"carb_g":37,"salt_g":0},
+
+    # 調味料（1大さじ相当）
+    "しょうゆ": {"kcal":13, "protein_g":1.4,"fat_g":0,"carb_g":1.2,"salt_g":2.6},
+    "みりん":   {"kcal":43, "protein_g":0,"fat_g":0,"carb_g":7.2,"salt_g":0},
+    "酒":       {"kcal":11, "protein_g":0,"fat_g":0,"carb_g":0.5,"salt_g":0},
+    "砂糖":     {"kcal":35, "protein_g":0,"fat_g":0,"carb_g":9,"salt_g":0},
+    "味噌":     {"kcal":33, "protein_g":2,"fat_g":1,"carb_g":4,"salt_g":0.9},
+    "ごま油":   {"kcal":111,"protein_g":0,"fat_g":12.6,"carb_g":0,"salt_g":0},
+    "オリーブオイル":{"kcal":111,"protein_g":0,"fat_g":12.6,"carb_g":0,"salt_g":0},
+    "塩":       {"kcal":0,  "protein_g":0,"fat_g":0,"carb_g":0,"salt_g":6.0}, # 小さじ1=6g → 大さじは×3に注意
+}
+
+def amount_to_grams_or_spoons(amount: str) -> tuple[str, float]:
+    """
+    '200g'→('g',200), '大さじ1'→('tbsp',1), '小さじ2'→('tsp',2), '1個'→('piece',1)
+    不明なら ('g', 0) を返す
+    """
+    if not amount: return ("g", 0.0)
+    a = amount.replace("．",".").strip().lower()
+    m = re.search(r'(\d+(?:\.\d+)?)\s*(g|グラム)', a)
+    if m: return ("g", float(m.group(1)))
+    m = re.search(r'大さじ\s*(\d+(?:\.\d+)?)', a)
+    if m: return ("tbsp", float(m.group(1)))
+    m = re.search(r'小さじ\s*(\d+(?:\.\d+)?)', a)
+    if m: return ("tsp", float(m.group(1)))
+    m = re.search(r'(\d+(?:\.\d+)?)\s*個', a)
+    if m: return ("piece", float(m.group(1)))
+    m = re.search(r'(\d+(?:\.\d+)?)\s*片', a)
+    if m: return ("piece", float(m.group(1)) * 0.5)
+    return ("g", 0.0)
+
+def tbsp_from_tsp(x: float) -> float: return x / 3.0
+
+def estimate_nutrition(rec) -> dict:
+    """食材名の包含マッチでFOODSから拾い、量をg/大さじ/小さじ等から概算。合算→1人前に割る。"""
+    total = {"kcal":0.0,"protein_g":0.0,"fat_g":0.0,"carb_g":0.0,"salt_g":0.0}
+    for ing in rec.ingredients:
+        name = ing.name
+        amt_str = ing.amount or ""
+        unit, val = amount_to_grams_or_spoons(amt_str)
+
+        key = None
+        for k in FOODS.keys():
+            if k in name:
+                key = k; break
+        if not key:
+            continue
+
+        base = FOODS[key].copy()
+        factor = 0.0
+        if unit == "g":
+            factor = val / 100.0
+        elif unit == "tbsp":
+            # FOODSは「1大さじ」基準のものは val をそのまま倍率に
+            if key in ["しょうゆ","みりん","酒","味噌","ごま油","オリーブオイル"]:
+                factor = val
+            else:
+                factor = (val * 15.0) / 100.0
+        elif unit == "tsp":
+            if key in ["しょうゆ","みりん","酒","味噌","ごま油","オリーブオイル"]:
+                factor = tbsp_from_tsp(val)
+            else:
+                factor = (val * 5.0) / 100.0
+        elif unit == "piece":
+            piece_g = 0
+            if "卵" in name: piece_g = 50
+            elif "にんにく" in name: piece_g = 5
+            else: piece_g = 30
+            factor = (piece_g * val) / 100.0
+        else:
+            continue
+
+        for k in total:
+            total[k] += base[k] * factor
+
+    serv = max(1, getattr(rec, "servings", 1))
+    for k in total:
+        total[k] = round(total[k] / serv, 1)
+    return total
+
+def score_against_profile(nutri: dict, profile_name: str) -> dict:
+    prof = NUTRI_PROFILES.get(profile_name, NUTRI_PROFILES["ふつう"])
+    def mark(val, rng):
+        lo, hi = rng
+        if val < lo*0.9: return "△"
+        if lo <= val <= hi: return "◎"
+        if val <= hi*1.15: return "△"
+        return "⚠"
+    return {
+        "kcal":      mark(nutri["kcal"],      prof["kcal"]),
+        "protein_g": mark(nutri["protein_g"], prof["protein_g"]),
+        "salt_g":    mark(nutri["salt_g"],    prof["salt_g"]),
+    }
+# ============================================================
+# 🔥 栄養ロジック ここまで
+# ============================================================
 
 # ============================================================
 # OpenAI 呼び出し（JSON生成＋フォールバック）
@@ -324,7 +453,6 @@ def generate_recipes(
 ) -> RecipeSet:
     avoid_keywords = avoid_keywords or []
 
-    # LLM path
     if _client is not None:
         try:
             avoid_line = ("除外: " + ", ".join(avoid_keywords)) if avoid_keywords else "除外: なし"
@@ -356,7 +484,7 @@ def generate_recipes(
         except Exception as e:
             st.info(f"LLMの構造化生成に失敗したためフォールバックします: {e}")
 
-    # Fallback path — 最低1件
+    # Fallback — 最低1件
     base_ings = [Ingredient(name=x) for x in ingredients[:6]] or [Ingredient(name="鶏むね肉"), Ingredient(name="キャベツ")]
     steps = [
         Step(text="材料を食べやすい大きさに切る"),
@@ -387,6 +515,9 @@ with st.form("inputs", clear_on_submit=False, border=True):
     # 希望/除外キーワード
     st.text_input("作りたい料理名・キーワード（任意）", key="want_keyword", placeholder="例）麻婆豆腐、ナスカレー")
     st.text_input("除外したい料理名・キーワード（カンマ区切り・任意）", key="avoid_keywords", placeholder="例）麻婆豆腐, カレー")
+
+    # 🔥 新規：栄養プロファイル選択
+    st.selectbox("栄養目安プロファイル", list(NUTRI_PROFILES.keys()), index=0, key="nutri_profile")
 
     # 画像機能はOFFのまま（将来ONにする場合はFEATURESで制御）
     st.session_state["image_mode"] = "テキストのみ（現在のまま）"
@@ -419,6 +550,7 @@ genre = st.session_state.get("genre", "和風")
 max_minutes = int(st.session_state.get("max_minutes", 30))
 want_keyword = (st.session_state.get("want_keyword") or "").strip()
 avoid_keywords = [s for s in (t.strip() for t in re.split(r"[、,]", st.session_state.get("avoid_keywords") or "")) if s]
+nutri_profile = st.session_state.get("nutri_profile","ふつう")
 
 # ============================================================
 # 生成 → 品質フィルタ（✅のみ表示）＋自動リトライ
@@ -479,7 +611,7 @@ if FEATURES["ENABLE_QUALITY_FILTER"]:
             st.stop()
 
 # ============================================================
-# 表示（✅のみバッジ表示／NGはそもそも残っていない想定）
+# 表示（✅のみバッジ表示／NGはそもそも残っていない想定）＋ 栄養概算
 # ============================================================
 if not data or not data.recommendations:
     st.warning("候補が作成できませんでした。入力を見直してください。")
@@ -509,6 +641,30 @@ for rec in data.recommendations:
         st.markdown(" / ".join(meta))
 
         st.markdown("**器具:** " + ("、".join(tools) if tools else "特になし"))
+
+        # 🔥 栄養概算 & スコア表示（1人前）
+        nutri = estimate_nutrition(rec)
+        score = score_against_profile(nutri, nutri_profile)
+        col_n1, col_n2 = st.columns([1,2])
+        with col_n1:
+            st.markdown("**栄養の概算（1人前）**")
+            st.write(
+                f"- エネルギー: {nutri['kcal']} kcal（{score['kcal']}）\n"
+                f"- たんぱく質: {nutri['protein_g']} g（{score['protein_g']}）\n"
+                f"- 脂質: {nutri['fat_g']} g\n"
+                f"- 炭水化物: {nutri['carb_g']} g\n"
+                f"- 塩分: {nutri['salt_g']} g（{score['salt_g']}）"
+            )
+        with col_n2:
+            tips = []
+            if score["salt_g"] == "⚠":
+                tips.append("塩分が多め → しょうゆ/味噌を小さじ1/2減らす・だしで調整")
+            if score["kcal"] == "⚠":
+                tips.append("カロリー高め → 油を小さじ1→1/2、主食量を控えめに")
+            if score["protein_g"] == "△":
+                tips.append("たんぱく質やや不足 → 卵や豆腐を1品追加")
+            if tips:
+                st.info("**一言アドバイス**\n- " + "\n- ".join(tips))
 
         st.markdown("**材料**")
         for i in rec.ingredients:
