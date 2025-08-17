@@ -94,6 +94,7 @@ def strip_step_prefix(text: str) -> str:
 
 # ============================================================
 # ユーティリティ：材料の分量推定・正規化（「材料名 量」に統一）
+# 子ども配慮ON時は 調味料・油 を 係数で減らす（デフォルト0.8）
 # ============================================================
 TSP_IN_TBSP = 3.0
 
@@ -112,6 +113,8 @@ COND_TSP_PER_SERV = {
 }
 OIL_TSP_PER_SERV = {"サラダ油": 1.0, "ごま油": 0.5, "オリーブオイル": 1.0}
 PIECE_PER_SERV = {"卵": "1個", "にんにく": "0.5片", "生姜": "0.5片"}
+
+SPICY_WORDS = ["一味", "七味", "豆板醤", "コチュジャン", "ラー油", "唐辛子", "粉唐辛子"]
 
 _num_re = re.compile(r'([0-9]+(?:\.[0-9]+)?)')
 def _has_number(s: str) -> bool:
@@ -186,7 +189,62 @@ def sanitize_amount(amount: Optional[str]) -> Optional[str]:
         return "少々"
     return a
 
-def normalize_ingredients(ings: List[Ingredient], servings: int) -> List[Ingredient]:
+def amount_to_unit_value(amount: str) -> tuple[str, float]:
+    """大さじ/小さじ/g/個 を抽出（なければ ('',0)）"""
+    if not amount:
+        return ("", 0.0)
+    a = amount.replace("．",".").strip().lower()
+    m = re.search(r'大さじ\s*(\d+(?:\.\d+)?)', a)
+    if m: return ("tbsp", float(m.group(1)))
+    m = re.search(r'小さじ\s*(\d+(?:\.\d+)?)', a)
+    if m: return ("tsp", float(m.group(1)))
+    m = re.search(r'(\d+(?:\.\d+)?)\s*g', a)
+    if m: return ("g", float(m.group(1)))
+    m = re.search(r'(\d+(?:\.\d+)?)\s*個', a)
+    if m: return ("piece", float(m.group(1)))
+    return ("", 0.0)
+
+def unit_value_to_amount(u: str, v: float) -> str:
+    """unit,value→日本語表記（0.5刻み）"""
+    if u == "tbsp":
+        v = round(v*2)/2
+        if v <= 0: return "少々"
+        return f"大さじ{v:g}"
+    if u == "tsp":
+        v = round(v*2)/2
+        if v <= 0: return "少々"
+        return f"小さじ{v:g}"
+    if u == "g":
+        if v <= 0: return "少々"
+        return _grams_to_pretty(int(round(v)))
+    if u == "piece":
+        if abs(v - int(v)) < 1e-6:
+            return f"{int(v)}個"
+        return f"{v:g}個"
+    return sanitize_amount(str(v)) or "適量"
+
+def is_condiment(name: str) -> bool:
+    KEYS = ["塩","砂糖","しょうゆ","醤油","みりん","酒","味噌","酢","ごま油","オリーブオイル","油","バター","だし","顆粒だし"]
+    return any(k in name for k in KEYS)
+
+def is_spicy(name: str) -> bool:
+    return any(k in name for k in SPICY_WORDS)
+
+def adjust_child_friendly_amount(name: str, amount: str, factor: float = 0.8) -> str:
+    """子ども配慮ON時：調味料・油は係数で減らす。辛味は別添注記。"""
+    if not amount:
+        return amount
+    u, v = amount_to_unit_value(amount)
+    if is_spicy(name):
+        # 辛味は抜く/別添へ（量を少々に）
+        return "少々（大人は後がけ）"
+    if is_condiment(name):
+        if u in {"tbsp","tsp","g"}:
+            nv = v * factor
+            return unit_value_to_amount(u, nv)
+    return amount
+
+def normalize_ingredients(ings: List[Ingredient], servings: int, child_mode: bool = False, child_factor: float = 0.8) -> List[Ingredient]:
     fixed: List[Ingredient] = []
     for it in ings:
         base_name, qty_in_name = split_quantity_from_name(it.name)
@@ -194,6 +252,8 @@ def normalize_ingredients(ings: List[Ingredient], servings: int) -> List[Ingredi
         if (not amt) or ("適量" in amt) or (not _has_number(amt) and "少々" not in amt):
             amt = _guess_amount(base_name, servings)
         amt = sanitize_amount(amt) or "適量"
+        if child_mode:
+            amt = adjust_child_friendly_amount(base_name, amt, child_factor)
         fixed.append(Ingredient(
             name=base_name,
             amount=amt,
@@ -446,7 +506,8 @@ def generate_recipes(
     genre: str,
     max_minutes: int,
     want_keyword: str = "",
-    avoid_keywords: List[str] | None = None
+    avoid_keywords: List[str] | None = None,
+    child_mode: bool = False
 ) -> RecipeSet:
     avoid_keywords = avoid_keywords or []
 
@@ -458,12 +519,14 @@ def generate_recipes(
             # テーマ/ジャンルは空なら書かない（＝お任せ）
             theme_line = f"テーマ: {theme}\n" if theme else ""
             genre_line = f"ジャンル: {genre}\n" if genre else ""
+            child_line = "子ども配慮: はい（辛味抜き・塩分-20%・一口大・やわらかめ・酒は十分加熱でアルコール飛ばす）\n" if child_mode else ""
 
             user_msg = (
                 f"食材: {', '.join(ingredients) if ingredients else '（未指定）'}\n"
                 f"人数: {servings}人\n"
                 f"{theme_line}"
                 f"{genre_line}"
+                f"{child_line}"
                 f"最大調理時間: {max_minutes}分\n"
                 f"{want_line}\n{avoid_line}\n"
                 "要件:\n"
@@ -471,6 +534,7 @@ def generate_recipes(
                 "- 除外キーワードを含む料理名は絶対に出さない\n"
                 "- 希望キーワードがあれば、少なくとも1件はその語に非常に近い料理名にする\n"
                 "- 量は可能な限り具体（g, 小さじ/大さじ/個・片）で、“適量”は避ける\n"
+                "- 子ども配慮ONの場合：辛味は後がけ/別添、塩分控えめ、食材は一口大、硬い食材は下茹でや片栗粉活用などを明記\n"
             )
             resp = _client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -502,13 +566,13 @@ def generate_recipes(
     return RecipeSet(recommendations=[rec])
 
 # ============================================================
-# UI：入力フォーム（画像UIは非表示）＋「ごはんの神様にお任せ」
+# UI：入力フォーム（画像UIは非表示）＋「ごはんの神様にお任せ」＋子ども配慮
 # ============================================================
 with st.form("inputs", clear_on_submit=False, border=True):
     st.text_input("冷蔵庫の食材（カンマ区切り）", key="ingredients", placeholder="例）豚肉, キャベツ, ねぎ")
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
-        st.slider("人数", 1, 6, 2, 1, key="servings")
+        st.slider("人数（合計）", 1, 8, 2, 1, key="servings")
     with c2:
         themes = ["（お任せ）", "時短", "節約", "栄養重視", "子ども向け", "おもてなし"]
         st.selectbox("テーマ", themes, index=0, key="theme")
@@ -528,6 +592,22 @@ with st.form("inputs", clear_on_submit=False, border=True):
     # 🍚 完全お任せ（テーマ・ジャンルの指定を無視）
     st.checkbox("今日はごはんの神様にお任せ", value=False, key="omakase")
 
+    # 👶 子ども向け配慮（軽めの味・食べやすさ）
+    st.checkbox("子ども向け配慮（辛味抜き・塩分ひかえめ・食べやすく）", value=False, key="child_mode")
+
+    with st.expander("家族プロファイル（任意）"):
+        st.caption("未入力なら上の「人数（合計）」を採用します。入力すると内訳から実効人数を自動計算します。")
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        with fc1:
+            st.number_input("大人", min_value=0, max_value=8, value=0, step=1, key="fam_adult")
+        with fc2:
+            st.number_input("未就学", min_value=0, max_value=8, value=0, step=1, key="fam_preschool")
+        with fc3:
+            st.number_input("小1–3", min_value=0, max_value=8, value=0, step=1, key="fam_elem_low")
+        with fc4:
+            st.number_input("小4–中", min_value=0, max_value=8, value=0, step=1, key="fam_elem_high")
+        st.caption("実効人数 = 大人 + 0.6×未就学 + 0.8×小1–3 + 0.9×小4–中")
+
     # 画像機能はOFFのまま（将来ONにする場合はFEATURESで制御）
     st.session_state["image_mode"] = "テキストのみ（現在のまま）"
     st.session_state["image_size"] = "1024x1024"
@@ -546,24 +626,37 @@ if FEATURES["SHOW_DEBUG_PANEL"]:
         })
 
 # ------------------------------------------------------------
-# 入力抽出（「お任せ」を空に正規化）
+# 入力抽出（「お任せ」を空に正規化）＋ 子ども配慮の実効人数計算
 # ------------------------------------------------------------
 if not submitted:
     st.stop()
 
 ing_text = st.session_state.get("ingredients", "") or ""
 ingredients_raw = [s for s in (t.strip() for t in re.split(r"[、,]", ing_text)) if s]
-servings = int(st.session_state.get("servings", 2))
 
 theme = st.session_state.get("theme", "（お任せ）")
 genre = st.session_state.get("genre", "（お任せ）")
 omakase = st.session_state.get("omakase", False)
+child_mode = st.session_state.get("child_mode", False)
 
 # 「（お任せ）」やチェックONなら空文字にして LLM への拘束を外す
 if theme == "（お任せ）" or omakase:
     theme = ""
 if genre == "（お任せ）" or omakase:
     genre = ""
+
+# 人数：内訳が入っていれば実効人数を計算、なければスライダー値
+base_servings = int(st.session_state.get("servings", 2))
+adult = int(st.session_state.get("fam_adult", 0))
+p = int(st.session_state.get("fam_preschool", 0))
+l = int(st.session_state.get("fam_elem_low", 0))
+h = int(st.session_state.get("fam_elem_high", 0))
+
+if (adult + p + l + h) > 0:
+    effective_servings = adult + 0.6 * p + 0.8 * l + 0.9 * h
+    servings = max(1, int(round(effective_servings)))
+else:
+    servings = base_servings
 
 max_minutes = int(st.session_state.get("max_minutes", 30))
 want_keyword = (st.session_state.get("want_keyword") or "").strip()
@@ -576,7 +669,8 @@ nutri_profile = st.session_state.get("nutri_profile","ふつう")
 try:
     data = generate_recipes(
         ingredients_raw, servings, theme, genre, max_minutes,
-        want_keyword=want_keyword, avoid_keywords=avoid_keywords
+        want_keyword=want_keyword, avoid_keywords=avoid_keywords,
+        child_mode=child_mode
     )
 except Exception as e:
     st.error(f"レシピ生成に失敗しました: {e}")
@@ -606,7 +700,8 @@ if FEATURES["ENABLE_QUALITY_FILTER"]:
         with st.spinner(f"品質に合うレシピを再提案中…（{attempt}/{FEATURES['MAX_QUALITY_RETRY']}）"):
             data = generate_recipes(
                 ingredients_raw, servings, theme, genre, max_minutes,
-                want_keyword=want_keyword, avoid_keywords=avoid_keywords
+                want_keyword=want_keyword, avoid_keywords=avoid_keywords,
+                child_mode=child_mode
             )
             # 除外と希望の適用を毎回かける
             if avoid_keywords and data.recommendations:
@@ -629,24 +724,37 @@ if FEATURES["ENABLE_QUALITY_FILTER"]:
             st.stop()
 
 # ============================================================
-# 表示（✅のみバッジ表示／NGはそもそも残っていない想定）＋ 栄養概算
+# 表示（✅のみバッジ表示／NGはそもそも残っていない想定）＋ 栄養概算 + 子ども配慮
 # ============================================================
 if not data or not data.recommendations:
     st.warning("候補が作成できませんでした。入力を見直してください。")
     st.stop()
 
+# 子ども配慮の調味料係数（-20%）
+CHILD_FACTOR = 0.8 if child_mode else 1.0
+
 for rec in data.recommendations:
-    # 表示前の正規化＆器具補完
-    rec.ingredients = normalize_ingredients(rec.ingredients, rec.servings)
+    # 実効人数に置き換え
+    rec.servings = servings
+
+    # 表示前の正規化＆器具補完（子ども配慮で調味料を軽減）
+    rec.ingredients = normalize_ingredients(rec.ingredients, rec.servings, child_mode=child_mode, child_factor=CHILD_FACTOR)
     tools = rec.equipment or infer_tools_from_recipe(rec)
 
     st.divider()
-    st.subheader(rec.recipe_title)
+    title_line = rec.recipe_title
+    if child_mode:
+        title_line += "　👨‍👩‍👧 子ども配慮"
+    st.subheader(title_line)
 
     # 品質バッジ（OKの時だけ）
     ok, _warns = quality_check(rec)
     if ok:
         st.success("✅ 一般的な家庭料理として妥当な品質です")
+
+    # 家族プロファイルのメモ表示
+    if (adult + p + l + h) > 0:
+        st.caption(f"取り分け目安：大人{adult} + 未就学{p}（×0.6） + 小1–3 {l}（×0.8） + 小4–中 {h}（×0.9） ≒ 実効 {rec.servings}人分")
 
     colA, colB = st.columns([2, 1])
     with colA:
@@ -675,6 +783,10 @@ for rec in data.recommendations:
             )
         with col_n2:
             tips = []
+            if child_mode:
+                tips.append("辛味は後がけ/別添に（大人だけ七味やラー油を追加）")
+                tips.append("根菜はレンジ下茹ででやわらかく（600W 2分→炒め/煮込みへ）")
+                tips.append("酒を使う場合はよく加熱してアルコールを飛ばす")
             if score["salt_g"] == "⚠":
                 tips.append("塩分が多め → しょうゆ/味噌を小さじ1/2減らす・だしで調整")
             if score["kcal"] == "⚠":
@@ -682,7 +794,7 @@ for rec in data.recommendations:
             if score["protein_g"] == "△":
                 tips.append("たんぱく質やや不足 → 卵や豆腐を1品追加")
             if tips:
-                st.info("**一言アドバイス**\n- " + "\n- ".join(tips))
+                st.info("**ひと工夫の提案**\n- " + "\n- ".join(tips))
 
         st.markdown("**材料**")
         for i in rec.ingredients:
@@ -696,7 +808,14 @@ for rec in data.recommendations:
 
         st.markdown("**手順**")
         for idx, s in enumerate(rec.steps, 1):
-            st.markdown(f"**STEP {idx}**　{strip_step_prefix(s.text)}")
+            line = strip_step_prefix(s.text)
+            if child_mode:
+                # かるい置換：危険/辛味キーワードの注記
+                if any(k in line for k in SPICY_WORDS):
+                    line += "（子ども向けは入れず、大人分に後から加える）"
+                if "酒" in line and "加熱" not in line:
+                    line += "（よく加熱してアルコールを飛ばす）"
+            st.markdown(f"**STEP {idx}**　{line}")
 
     with colB:
         # 画像機能はOFF（将来ONにする場合はFEATURESで制御）
