@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ごはんの神様に相談だ！ / Streamlit App
-# 方式A：Secretsの APP_MODE によりベータ/開発を切替
+# 方式A：Secretsの APP_MODE によりベータ/開発/本番を切替
 #   - APP_MODE = "beta"  → ベータ版（テストユーザー向け、安定設定）
 #   - APP_MODE = "dev"   → 開発版（フィードバック反映の実験設定）
 #   - APP_MODE = "prod"  → 本番版
@@ -277,7 +277,7 @@ def _filter_passed_recipes(recommendations: List[Recipe]) -> List[Recipe]:
     return passed
 
 # ============================================================
-# 🔥 栄養プロファイル & 概算ロジック（ここから新規追加）
+# 🔥 栄養プロファイル & 概算ロジック
 # ============================================================
 NUTRI_PROFILES = {
     "ふつう":   {"kcal": (500, 800), "protein_g": (20, 35), "salt_g": (0, 2.5)},
@@ -400,9 +400,6 @@ def score_against_profile(nutri: dict, profile_name: str) -> dict:
         "protein_g": mark(nutri["protein_g"], prof["protein_g"]),
         "salt_g":    mark(nutri["salt_g"],    prof["salt_g"]),
     }
-# ============================================================
-# 🔥 栄養ロジック ここまで
-# ============================================================
 
 # ============================================================
 # OpenAI 呼び出し（JSON生成＋フォールバック）
@@ -457,10 +454,16 @@ def generate_recipes(
         try:
             avoid_line = ("除外: " + ", ".join(avoid_keywords)) if avoid_keywords else "除外: なし"
             want_line  = ("希望: " + want_keyword) if want_keyword else "希望: なし"
+
+            # テーマ/ジャンルは空なら書かない（＝お任せ）
+            theme_line = f"テーマ: {theme}\n" if theme else ""
+            genre_line = f"ジャンル: {genre}\n" if genre else ""
+
             user_msg = (
                 f"食材: {', '.join(ingredients) if ingredients else '（未指定）'}\n"
                 f"人数: {servings}人\n"
-                f"テーマ: {theme}\nジャンル: {genre}\n"
+                f"{theme_line}"
+                f"{genre_line}"
                 f"最大調理時間: {max_minutes}分\n"
                 f"{want_line}\n{avoid_line}\n"
                 "要件:\n"
@@ -491,7 +494,7 @@ def generate_recipes(
         Step(text="フライパンで油を熱し、肉と野菜を炒める"),
         Step(text="しょうゆ・みりん・酒で味付けして全体を絡める"),
     ]
-    title = (want_keyword or f"かんたん炒め（{genre}風）").strip()
+    title = (want_keyword or f"かんたん炒め（{genre or 'お任せ'}風）").strip()
     rec = Recipe(
         title=title, servings=servings, total_time_min=min(20, max_minutes),
         difficulty="かんたん", ingredients=base_ings, steps=steps, equipment=None
@@ -499,7 +502,7 @@ def generate_recipes(
     return RecipeSet(recommendations=[rec])
 
 # ============================================================
-# UI：入力フォーム（画像UIは非表示）
+# UI：入力フォーム（画像UIは非表示）＋「ごはんの神様にお任せ」
 # ============================================================
 with st.form("inputs", clear_on_submit=False, border=True):
     st.text_input("冷蔵庫の食材（カンマ区切り）", key="ingredients", placeholder="例）豚肉, キャベツ, ねぎ")
@@ -507,17 +510,23 @@ with st.form("inputs", clear_on_submit=False, border=True):
     with c1:
         st.slider("人数", 1, 6, 2, 1, key="servings")
     with c2:
-        st.selectbox("テーマ", ["時短", "節約", "栄養重視", "子ども向け", "おもてなし"], index=1, key="theme")
+        themes = ["（お任せ）", "時短", "節約", "栄養重視", "子ども向け", "おもてなし"]
+        st.selectbox("テーマ", themes, index=0, key="theme")
     with c3:
-        st.selectbox("ジャンル", ["和風", "洋風", "中華風", "韓国風", "エスニック"], index=0, key="genre")
+        genres = ["（お任せ）", "和風", "洋風", "中華風", "韓国風", "エスニック"]
+        st.selectbox("ジャンル", genres, index=0, key="genre")
+
     st.slider("最大調理時間（分）", 5, 90, 30, 5, key="max_minutes")
 
     # 希望/除外キーワード
     st.text_input("作りたい料理名・キーワード（任意）", key="want_keyword", placeholder="例）麻婆豆腐、ナスカレー")
     st.text_input("除外したい料理名・キーワード（カンマ区切り・任意）", key="avoid_keywords", placeholder="例）麻婆豆腐, カレー")
 
-    # 🔥 新規：栄養プロファイル選択
+    # 🔥 栄養プロファイル選択
     st.selectbox("栄養目安プロファイル", list(NUTRI_PROFILES.keys()), index=0, key="nutri_profile")
+
+    # 🍚 完全お任せ（テーマ・ジャンルの指定を無視）
+    st.checkbox("今日はごはんの神様にお任せ", value=False, key="omakase")
 
     # 画像機能はOFFのまま（将来ONにする場合はFEATURESで制御）
     st.session_state["image_mode"] = "テキストのみ（現在のまま）"
@@ -537,7 +546,7 @@ if FEATURES["SHOW_DEBUG_PANEL"]:
         })
 
 # ------------------------------------------------------------
-# 入力抽出
+# 入力抽出（「お任せ」を空に正規化）
 # ------------------------------------------------------------
 if not submitted:
     st.stop()
@@ -545,8 +554,17 @@ if not submitted:
 ing_text = st.session_state.get("ingredients", "") or ""
 ingredients_raw = [s for s in (t.strip() for t in re.split(r"[、,]", ing_text)) if s]
 servings = int(st.session_state.get("servings", 2))
-theme = st.session_state.get("theme", "節約")
-genre = st.session_state.get("genre", "和風")
+
+theme = st.session_state.get("theme", "（お任せ）")
+genre = st.session_state.get("genre", "（お任せ）")
+omakase = st.session_state.get("omakase", False)
+
+# 「（お任せ）」やチェックONなら空文字にして LLM への拘束を外す
+if theme == "（お任せ）" or omakase:
+    theme = ""
+if genre == "（お任せ）" or omakase:
+    genre = ""
+
 max_minutes = int(st.session_state.get("max_minutes", 30))
 want_keyword = (st.session_state.get("want_keyword") or "").strip()
 avoid_keywords = [s for s in (t.strip() for t in re.split(r"[、,]", st.session_state.get("avoid_keywords") or "")) if s]
@@ -642,7 +660,7 @@ for rec in data.recommendations:
 
         st.markdown("**器具:** " + ("、".join(tools) if tools else "特になし"))
 
-        # 🔥 栄養概算 & スコア表示（1人前）
+        # 栄養概算 & スコア表示（1人前）
         nutri = estimate_nutrition(rec)
         score = score_against_profile(nutri, nutri_profile)
         col_n1, col_n2 = st.columns([1,2])
@@ -681,7 +699,7 @@ for rec in data.recommendations:
             st.markdown(f"**STEP {idx}**　{strip_step_prefix(s.text)}")
 
     with colB:
-        # 画像機能はOFF
+        # 画像機能はOFF（将来ONにする場合はFEATURESで制御）
         pass
 
 # ここまで
